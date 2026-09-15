@@ -49,25 +49,28 @@ Webcam → Pose Landmarker (shoulder/elbow/wrist)
 | 4 | MG90S Servo | Wrist Rotation, Wrist Extension | 2 |
 | 5 | SG90 Servo | Claw | 1 |
 | 6 | USB Webcam | Any UVC camera | 1 |
-| 7 | 5V 10A SMPS | Servo power supply | 1 |
-| 8 | Buck Converter (XL4015) | Clean 5V for Arduino | 1 |
-| 9 | Power Distribution Board | 5V distribution | 1 |
+| 7 | SMPS | High-voltage DC power supply | 1 |
+| 8 | Buck Converter (XL4015) | Steps down SMPS voltage to 5V | 1 |
 
 ### Wiring
 
-```
-Arduino Uno        PCA9685
------------        -------
-A4  (SDA)  ──────  SDA
-A5  (SCL)  ──────  SCL
-GND        ──────  GND
-5V         ──────  VCC  (logic power)
+> 📖 **Full Guide**: See [WIRING_GUIDE.md](WIRING_GUIDE.md) for detailed schematics, pin-by-pin charts, and pre-flight checklists.
 
-5V 10A SMPS → Power Distribution Board → PCA9685 V+ screw terminal (servo power)
-Power Distribution Board → Buck Converter (set to 5V) → Arduino 5V pin (optional)
+The architecture has two independent paths:
+
+```
+1. Power Path (Servo Rail):
+   SMPS (higher voltage) ──► Buck Converter (XL4015, set to 5.0V) ──► PCA9685 V+ screw terminal ──► Servos (Ch 0–5)
+
+2. Control Path:
+   Computer / Laptop ──► USB Cable (power + data) ──► Arduino Uno
+                                                        ├── A4 (SDA) ──► PCA9685 SDA
+                                                        ├── A5 (SCL) ──► PCA9685 SCL
+                                                        ├── 5V       ──► PCA9685 VCC (logic)
+                                                        └── GND      ──► PCA9685 GND
 ```
 
-> ⚠️ **Do NOT power servos from the Arduino's 5V pin.** Use the SMPS → PCA9685 V+ path.
+> ⚠️ **Note on Power**: The Arduino is powered directly by the laptop via USB. The buck converter is used because the SMPS supplies a higher voltage than recommended for the servos; it steps down the SMPS voltage to a regulated 5.0V for the PCA9685 servo driver board. **Never** power the servos directly from the Arduino's 5V pin.
 
 ---
 

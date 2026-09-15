@@ -1,0 +1,127 @@
+{
+  "version": 1,
+  "author": "ArmAutomata",
+  "editor": "wokwi",
+  "parts": [
+    {
+      "type": "wokwi-arduino-uno",
+      "id": "uno",
+      "top": 140,
+      "left": -60,
+      "attrs": {}
+    },
+    {
+      "type": "chip-pca9685",
+      "id": "pca",
+      "top": 120,
+      "left": 280,
+      "attrs": {
+        "gen_debug": "1",
+        "i2c_debug": "1"
+      }
+    },
+    {
+      "type": "wokwi-vcc",
+      "id": "vcc_smps",
+      "top": -50,
+      "left": 550,
+      "attrs": {
+        "label": "5V 10A SMPS"
+      }
+    },
+    {
+      "type": "wokwi-gnd",
+      "id": "gnd_smps",
+      "top": 580,
+      "left": 550,
+      "attrs": {
+        "label": "GND"
+      }
+    },
+    {
+      "type": "wokwi-servo",
+      "id": "servo_base",
+      "top": -60,
+      "left": 660,
+      "attrs": {
+        "label": "Ch0: Base (MG996R)"
+      }
+    },
+    {
+      "type": "wokwi-servo",
+      "id": "servo_shoulder",
+      "top": 40,
+      "left": 660,
+      "attrs": {
+        "label": "Ch1: Shoulder (MG996R)"
+      }
+    },
+    {
+      "type": "wokwi-servo",
+      "id": "servo_elbow",
+      "top": 140,
+      "left": 660,
+      "attrs": {
+        "label": "Ch2: Elbow (MG996R)"
+      }
+    },
+    {
+      "type": "wokwi-servo",
+      "id": "servo_wrist_rot",
+      "top": 240,
+      "left": 660,
+      "attrs": {
+        "label": "Ch3: Wrist Rot (MG90S)"
+      }
+    },
+    {
+      "type": "wokwi-servo",
+      "id": "servo_wrist_ext",
+      "top": 340,
+      "left": 660,
+      "attrs": {
+        "label": "Ch4: Wrist Ext (MG90S)"
+      }
+    },
+    {
+      "type": "wokwi-servo",
+      "id": "servo_claw",
+      "top": 440,
+      "left": 660,
+      "attrs": {
+        "label": "Ch5: Claw (SG90)"
+      }
+    }
+  ],
+  "connections": [
+    [ "uno:A4", "pca:SDA", "green", [ "h20", "v-30" ] ],
+    [ "uno:A5", "pca:SCL", "yellow", [ "h30", "v-30" ] ],
+    [ "uno:5V", "pca:VCC", "red", [ "v20", "h180", "v-80" ] ],
+    [ "uno:GND.1", "pca:GND", "black", [ "v30", "h160", "v-80" ] ],
+    [ "uno:GND.2", "gnd_smps:GND", "black", [ "v60", "h360" ] ],
+
+    [ "pca:LED0", "servo_base:PWM", "orange", [] ],
+    [ "pca:LED1", "servo_shoulder:PWM", "orange", [] ],
+    [ "pca:LED2", "servo_elbow:PWM", "orange", [] ],
+    [ "pca:LED3", "servo_wrist_rot:PWM", "orange", [] ],
+    [ "pca:LED4", "servo_wrist_ext:PWM", "orange", [] ],
+    [ "pca:LED5", "servo_claw:PWM", "orange", [] ],
+
+    [ "vcc_smps:VCC", "servo_base:V+", "red", [] ],
+    [ "vcc_smps:VCC", "servo_shoulder:V+", "red", [] ],
+    [ "vcc_smps:VCC", "servo_elbow:V+", "red", [] ],
+    [ "vcc_smps:VCC", "servo_wrist_rot:V+", "red", [] ],
+    [ "vcc_smps:VCC", "servo_wrist_ext:V+", "red", [] ],
+    [ "vcc_smps:VCC", "servo_claw:V+", "red", [] ],
+
+    [ "gnd_smps:GND", "servo_base:GND", "black", [] ],
+    [ "gnd_smps:GND", "servo_shoulder:GND", "black", [] ],
+    [ "gnd_smps:GND", "servo_elbow:GND", "black", [] ],
+    [ "gnd_smps:GND", "servo_wrist_rot:GND", "black", [] ],
+    [ "gnd_smps:GND", "servo_wrist_ext:GND", "black", [] ],
+    [ "gnd_smps:GND", "servo_claw:GND", "black", [] ]
+  ],
+  "dependencies": {
+    "chip-pca9685": "github:bonnyr/wokwi-pca9685-custom-chip@0.1.1"
+  }
+}
