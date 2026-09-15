@@ -134,11 +134,55 @@ curl -L -o host/pose_landmarker.task \
   https://storage.googleapis.com/mediapipe-models/pose_landmarker/pose_landmarker_lite/float16/1/pose_landmarker_lite.task
 ```
 
-### 4. Arduino firmware
+### 4. Upload firmware to Arduino
 
-1. Open `firmware/arm_firmware/arm_firmware.ino` in the Arduino IDE.
-2. Install **Adafruit PWM Servo Driver Library** (Library Manager → search → install).
-3. Select **Board → Arduino Uno**, pick your port, and **Upload**.
+The file `firmware/arm_firmware/arm_firmware.ino` is the Arduino sketch that receives joint angles over USB serial and drives the 6 servos via the PCA9685 board. You need to upload this file to your Arduino Uno **once**.
+
+#### Step 4a — Install Arduino IDE
+
+Download and install from [arduino.cc/en/software](https://www.arduino.cc/en/software) (Windows, macOS, or Linux).
+
+#### Step 4b — Install the required library
+
+The firmware depends on the **Adafruit PWM Servo Driver Library** to communicate with the PCA9685 board over I2C.
+
+1. Open Arduino IDE
+2. Go to **Sketch → Include Library → Manage Libraries…** (or press `Ctrl+Shift+I`)
+3. In the search box, type **"Adafruit PWM Servo Driver"**
+4. Find **"Adafruit PWM Servo Driver Library"** by Adafruit — click **Install**
+5. If prompted to install dependencies (like "Adafruit BusIO"), click **Install All**
+
+#### Step 4c — Open the sketch
+
+1. In Arduino IDE, go to **File → Open…**
+2. Navigate to the cloned repo folder: `ArmAutomata-/firmware/arm_firmware/`
+3. Open the file **`arm_firmware.ino`**
+
+The sketch will open in a new window. You should see the code with `#include <Adafruit_PWMServoDriver.h>` at the top.
+
+#### Step 4d — Connect and configure
+
+1. **Plug the Arduino Uno into your computer** via USB-B cable
+2. In Arduino IDE, go to **Tools → Board** and select **"Arduino Uno"**
+3. Go to **Tools → Port** and select the port that appeared when you plugged in:
+   - Windows: **COM3**, **COM4**, etc.
+   - macOS: **/dev/cu.usbmodem14201** or similar
+   - Linux: **/dev/ttyACM0** or similar
+
+> If no port appears, install the Arduino USB driver: [CH340 driver](https://sparks.gogo.co.nz/ch340.html) (for clone boards) or the official [Arduino drivers](https://www.arduino.cc/en/Guide/DriverInstallation).
+
+#### Step 4e — Upload
+
+1. Click the **Upload** button (→ arrow icon) or press `Ctrl+U`
+2. Wait for the IDE to compile and upload. You should see:
+   ```
+   Sketch uses XXXX bytes (XX%) of program storage space.
+   Done uploading.
+   ```
+3. The Arduino will reset, and all 6 servos will move to **90° (neutral position)**
+4. Open **Tools → Serial Monitor** (set baud to **115200**) — you should see: `ARM_READY`
+
+The Arduino is now ready to receive angle commands from the Python host. You only need to upload once — the firmware stays in the Arduino's flash memory even after power cycling.
 
 ### 5. Find your serial port
 
