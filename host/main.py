@@ -47,6 +47,20 @@ from smoothing import AngleSmoother
 from serial_link import SerialLink
 
 
+def list_serial_ports() -> None:
+    """Print all available serial ports and exit."""
+    from serial.tools.list_ports import comports
+
+    ports = sorted(comports(), key=lambda p: p.device)
+    if not ports:
+        print("No serial ports found. Is the Arduino plugged in?")
+    else:
+        print("Available serial ports:")
+        for p in ports:
+            print(f"  {p.device:20s}  {p.description}")
+    sys.exit(0)
+
+
 def parse_args() -> argparse.Namespace:
     """Parse CLI arguments."""
     parser = argparse.ArgumentParser(
@@ -69,7 +83,15 @@ def parse_args() -> argparse.Namespace:
         action="store_true",
         help="Run without opening a serial connection (for testing).",
     )
-    return parser.parse_args()
+    parser.add_argument(
+        "--list-ports",
+        action="store_true",
+        help="List available serial ports and exit.",
+    )
+    args = parser.parse_args()
+    if args.list_ports:
+        list_serial_ports()
+    return args
 
 
 def main() -> None:

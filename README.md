@@ -1,48 +1,57 @@
-# Gesture-Controlled 6-DOF Robotic Arm
+# ArmAutomata — Gesture-Controlled 6-DOF Robotic Arm
 
-A real-time gesture-controlled robotic arm system. A USB webcam captures your hand; a Python host detects hand landmarks, classifies gestures, computes inverse kinematics, and streams joint angles to an Arduino Uno over USB serial. The Arduino drives six servos via a PCA9685 PWM board.
+A real-time gesture-controlled robotic arm. A webcam captures your arm and hand; a Python host detects body pose + hand landmarks, computes joint angles, and streams them to an Arduino Uno over USB serial. The Arduino drives six servos via a PCA9685 PWM board.
 
 ## Architecture
 
 ```
-Webcam → MediaPipe Hands → Gesture + Claw + Wrist Rotation
-       → IK Solver → Smoother → Serial → Arduino → PCA9685 → Servos
+Webcam → Pose Landmarker (shoulder/elbow/wrist)
+       → Hand Landmarker (fingers/gestures)
+       → Arm Mapper → Smoother → Serial → Arduino → PCA9685 → Servos
 ```
+
+### Tracking Modes (automatic)
+
+| Mode | What's visible | How arm is controlled |
+|------|----------------|----------------------|
+| 🟢 **FULL_ARM** | Shoulder + elbow + wrist | Direct joint-angle mirroring |
+| 🟠 **FOREARM** | Elbow + wrist | Elbow angle + estimated shoulder |
+| 🔵 **HAND_ONLY** | Just the hand | IK from wrist position |
 
 ### Motor Layout
 
 | PCA9685 Ch | Joint              | Servo  | Control Source                    |
 |------------|--------------------|--------|-----------------------------------|
-| 0          | Base Rotation      | MG996R | Hand X/Y position (atan2)         |
-| 1          | Shoulder Extension | MG996R | IK from hand position             |
-| 2          | Elbow Extension    | MG996R | IK from hand position             |
-| 3          | Wrist Rotation     | MG90S  | Hand roll angle in camera frame   |
-| 4          | Wrist Extension    | MG90S  | IK (keeps end-effector level)     |
-| 5          | Claw (2-finger)    | SG90S  | Thumb-to-fingers distance         |
+| 0          | Base Rotation      | MG996R | Wrist horizontal position         |
+| 1          | Shoulder Extension | MG996R | Upper arm angle (direct mirror)   |
+| 2          | Elbow Extension    | MG996R | Elbow interior angle (direct)     |
+| 3          | Wrist Rotation     | MG90S  | Hand roll angle in camera         |
+| 4          | Wrist Extension    | MG90S  | Auto-levels end-effector          |
+| 5          | Claw (2-finger)    | SG90   | Thumb-to-fingers distance         |
 
 ### Gesture Control
 
 | Gesture       | Action                                                   |
 |---------------|----------------------------------------------------------|
-| **Open hand** | Arm follows hand position; claw opens proportionally      |
-| **Pinch/Grab**| Arm follows hand position; claw closes proportionally     |
+| **Open hand** | Arm follows your arm; claw opens proportionally           |
+| **Pinch/Grab**| Arm follows your arm; claw closes proportionally          |
 | **Fist**      | Freeze — arm holds current pose                           |
-
-**Claw control**: The claw angle is mapped **proportionally** from the distance between your thumb tip and the average position of your other four fingertips. Move your thumb toward your fingers to close the claw; spread them apart to open it.
-
-**Wrist rotation**: Tilt/roll your hand left or right to rotate the wrist servo.
 
 ## Hardware
 
 ### Components
 
-- **Arduino Uno** (or compatible)
-- **PCA9685** 16-channel PWM driver board
-- **MG996R** × 3 — base rotation (ch 0), shoulder (ch 1), elbow (ch 2)
-- **MG90S** × 2 — wrist rotation (ch 3), wrist extension (ch 4)
-- **SG90S** × 1 — claw / gripper (ch 5)
-- **USB webcam** (any UVC-compatible camera)
-- **5V power supply** (≥3A recommended) for the servos
+| # | Component | Spec | Qty |
+|---|-----------|------|-----|
+| 1 | Arduino Uno R3 | ATmega328P | 1 |
+| 2 | PCA9685 Servo Driver | 16-ch I2C PWM | 1 |
+| 3 | MG996R Servo | Base, Shoulder, Elbow | 3 |
+| 4 | MG90S Servo | Wrist Rotation, Wrist Extension | 2 |
+| 5 | SG90 Servo | Claw | 1 |
+| 6 | USB Webcam | Any UVC camera | 1 |
+| 7 | 5V 10A SMPS | Servo power supply | 1 |
+| 8 | Buck Converter (XL4015) | Clean 5V for Arduino | 1 |
+| 9 | Power Distribution Board | 5V distribution | 1 |
 
 ### Wiring
 
@@ -54,93 +63,161 @@ A5  (SCL)  ──────  SCL
 GND        ──────  GND
 5V         ──────  VCC  (logic power)
 
-External 5V PSU    PCA9685
-(≥3A)              -------
-+5V        ──────  V+   (servo power — screw terminal)
-GND        ──────  GND  (screw terminal)
+5V 10A SMPS → Power Distribution Board → PCA9685 V+ screw terminal (servo power)
+Power Distribution Board → Buck Converter (set to 5V) → Arduino 5V pin (optional)
 ```
 
-> ⚠️ **Do NOT power the servos from the Arduino's 5V pin.** Use a separate supply (5–6V, ≥3A) connected to the PCA9685 V+ screw terminal.
+> ⚠️ **Do NOT power servos from the Arduino's 5V pin.** Use the SMPS → PCA9685 V+ path.
+
+---
 
 ## Software Setup
 
-### 1. Python Host (requires Python 3.10–3.12)
+### Prerequisites
+
+- **Python 3.10–3.12** (3.12 recommended)
+- **Git** (to clone the repo)
+- **Arduino IDE** (for firmware upload)
+
+### 1. Clone the repo
 
 ```bash
-cd ~/Projects/RoboArm
+git clone https://github.com/Mayank3613/ArmAutomata-.git
+cd ArmAutomata-
+```
+
+### 2. Create a virtual environment & install dependencies
+
+#### Windows (Command Prompt)
+```cmd
+python -m venv venv
+venv\Scripts\activate
+pip install -r requirements.txt
+```
+
+#### Windows (PowerShell)
+```powershell
+python -m venv venv
+.\venv\Scripts\Activate.ps1
+pip install -r requirements.txt
+```
+
+#### macOS
+```bash
 python3.12 -m venv venv
 source venv/bin/activate
 pip install -r requirements.txt
 ```
 
-### 2. Download the Hand Landmarker Model
+#### Linux
+```bash
+python3 -m venv venv
+source venv/bin/activate
+pip install -r requirements.txt
+```
 
+### 3. Download MediaPipe models
+
+#### Windows (PowerShell)
+```powershell
+Invoke-WebRequest -Uri "https://storage.googleapis.com/mediapipe-models/hand_landmarker/hand_landmarker/float16/1/hand_landmarker.task" -OutFile "host\hand_landmarker.task"
+
+Invoke-WebRequest -Uri "https://storage.googleapis.com/mediapipe-models/pose_landmarker/pose_landmarker_lite/float16/1/pose_landmarker_lite.task" -OutFile "host\pose_landmarker.task"
+```
+
+#### macOS / Linux
 ```bash
 curl -L -o host/hand_landmarker.task \
   https://storage.googleapis.com/mediapipe-models/hand_landmarker/hand_landmarker/float16/1/hand_landmarker.task
+
+curl -L -o host/pose_landmarker.task \
+  https://storage.googleapis.com/mediapipe-models/pose_landmarker/pose_landmarker_lite/float16/1/pose_landmarker_lite.task
 ```
 
-### 3. Arduino Firmware
+### 4. Arduino firmware
 
 1. Open `firmware/arm_firmware/arm_firmware.ino` in the Arduino IDE.
-2. Install the **Adafruit PWM Servo Driver Library** via Library Manager.
-3. Select **Board → Arduino Uno**, choose the correct port, and upload.
+2. Install **Adafruit PWM Servo Driver Library** (Library Manager → search → install).
+3. Select **Board → Arduino Uno**, pick your port, and **Upload**.
 
-### 4. Find Your Serial Port
+### 5. Find your serial port
 
-| OS      | Command                              | Typical result        |
-|---------|--------------------------------------|-----------------------|
-| macOS   | `ls /dev/tty.usb*`                   | `/dev/tty.usbmodem…`  |
-| Linux   | `ls /dev/ttyACM* /dev/ttyUSB*`       | `/dev/ttyACM0`        |
-| Windows | Device Manager → Ports               | `COM3`                |
+The easiest way — use the built-in port scanner:
 
-Update `SERIAL_PORT` in `host/config.py`, or pass it at runtime.
+```bash
+python host/main.py --list-ports
+```
+```
+Available serial ports:
+  COM3                  Arduino Uno (COM3)
+```
+
+Or find it manually:
+
+| OS | Method |
+|----|--------|
+| **Windows** | Device Manager → Ports (COM & LPT) → look for "Arduino Uno (COMx)" |
+| **macOS** | Terminal: `ls /dev/tty.usb*` |
+| **Linux** | Terminal: `ls /dev/ttyACM* /dev/ttyUSB*` |
+
+---
 
 ## Running
 
-```bash
-cd ~/Projects/RoboArm/host
-source ../venv/bin/activate
+Activate your virtual environment first, then:
 
-python3 main.py --no-serial          # test without Arduino
-python3 main.py --port COM3          # with Arduino on COM3
-python3 main.py --port /dev/ttyACM0  # with Arduino on Linux
+```bash
+# Test without Arduino (any platform)
+python host/main.py --no-serial
+
+# With Arduino
+python host/main.py --port COM3              # Windows
+python host/main.py --port /dev/tty.usbmodem14201  # macOS
+python host/main.py --port /dev/ttyACM0      # Linux
+
+# Auto-detect serial ports
+python host/main.py --list-ports
 ```
 
-- An OpenCV window shows the annotated camera feed with gesture labels and joint angles.
+> **Note:** On macOS/Linux, use `python3` instead of `python` if your system default is Python 2.
+
+- An OpenCV window shows the annotated camera feed with tracking mode and joint angles.
 - Press **`q`** in the window to quit.
 
 ### IK Validation
 
 ```bash
-cd host
-python3 kinematics.py
+python host/kinematics.py
 ```
+
+---
 
 ## Project Structure
 
 ```
-RoboArm/
+ArmAutomata-/
 ├── README.md
 ├── requirements.txt
+├── .gitignore
 ├── host/
-│   ├── config.py          # All tunable constants
-│   ├── hand_tracker.py    # MediaPipe hand detection (Tasks API)
+│   ├── config.py          # All tunable constants (auto-detects OS)
+│   ├── hand_tracker.py    # MediaPipe Hand Landmarker (fingers)
+│   ├── body_tracker.py    # MediaPipe Pose Landmarker (arm)
+│   ├── arm_mapper.py      # Maps human arm → robot joint angles
 │   ├── gestures.py        # Gesture classification + claw + wrist rotation
 │   ├── calibration.py     # Normalised coords → workspace mm
-│   ├── kinematics.py      # Inverse & forward kinematics
+│   ├── kinematics.py      # Inverse & forward kinematics (IK fallback)
 │   ├── smoothing.py       # EMA + deadband filter
 │   ├── serial_link.py     # Arduino serial communication (6 angles)
-│   ├── main.py            # Main control loop
-│   └── hand_landmarker.task  # MediaPipe model (downloaded)
+│   └── main.py            # Main control loop (--list-ports, --no-serial)
 └── firmware/
     └── arm_firmware/
-        └── arm_firmware.ino   # Arduino sketch (6 servos)
+        └── arm_firmware.ino   # Arduino sketch (6 servos, non-blocking)
 ```
 
 ## Configuration
 
-All tunable constants live in [`host/config.py`](host/config.py). Key settings:
+All tunable constants live in [`host/config.py`](host/config.py). The serial port default auto-detects your OS.
 
 | Constant             | Default | Description                                  |
 |----------------------|---------|----------------------------------------------|
@@ -152,14 +229,18 @@ All tunable constants live in [`host/config.py`](host/config.py). Key settings:
 | `CLAW_DIST_MAX`      | 0.35    | Thumb-finger dist → claw fully open          |
 | `CLAW_OPEN_ANGLE`    | 90      | Servo angle for claw open                    |
 | `CLAW_CLOSED_ANGLE`  | 30      | Servo angle for claw closed                  |
-| `SERIAL_PORT`        | /dev/ttyUSB0 | Default serial port                     |
+| `SERIAL_PORT`        | auto    | COM3 (Win) / /dev/tty.usbmodem… (Mac) / /dev/ttyACM0 (Linux) |
 
-## Calibration Notes
+## Troubleshooting
 
-- **Servo pulse bounds** (`SERVOMIN`/`SERVOMAX` in the `.ino`): Defaults (150/600) work for most servos. Fine-tune per servo.
-- **Claw thresholds** (`CLAW_DIST_MIN`/`CLAW_DIST_MAX`): Adjust based on your hand size and camera distance. Lower values = more sensitive.
-- **Workspace bounds**: Adjust `WORKSPACE_*` constants to match your physical setup.
-- **Wrist rotation**: If the wrist rotation direction is inverted, negate the angle in `compute_wrist_rotation()` in `gestures.py`.
+| Problem | Solution |
+|---------|----------|
+| `ModuleNotFoundError` | Activate the venv: `venv\Scripts\activate` (Win) or `source venv/bin/activate` (Mac/Linux) |
+| Camera not opening | Grant camera permission. Windows: Settings → Privacy → Camera. macOS: System Settings → Privacy → Camera |
+| `FileNotFoundError: hand_landmarker.task` | Download the model files (step 3 above) |
+| Serial port not found | Run `python host/main.py --list-ports` to find the correct port |
+| MediaPipe crash on macOS (`DrishtiMetalHelper`) | Use `mediapipe<1.0` (already pinned in requirements.txt) and Python 3.12 |
+| `python` not found (Mac/Linux) | Use `python3` instead |
 
 ## License
 

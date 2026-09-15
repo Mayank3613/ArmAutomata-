@@ -74,7 +74,14 @@ NUM_JOINTS: int = 6
 # ---------------------------------------------------------------------------
 # Serial communication
 # ---------------------------------------------------------------------------
-SERIAL_PORT: str = "/dev/ttyUSB0"     # [TUNE] e.g. "COM3" on Windows, "/dev/ttyACM0" on Linux
+import platform as _platform
+if _platform.system() == "Windows":
+    SERIAL_PORT: str = "COM3"          # [TUNE] Check Device Manager → Ports
+elif _platform.system() == "Darwin":
+    SERIAL_PORT: str = "/dev/tty.usbmodem14201"  # [TUNE] ls /dev/tty.usb*
+else:
+    SERIAL_PORT: str = "/dev/ttyACM0"  # [TUNE] ls /dev/ttyACM* /dev/ttyUSB*
+
 SERIAL_BAUD: int = 115200
 SERIAL_RESET_WAIT_S: float = 2.0      # Seconds to wait after opening port for Arduino reset
 
