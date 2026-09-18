@@ -55,10 +55,12 @@ void setup() {
     pwm.setOscillatorFrequency(27000000);
     pwm.setPWMFreq(PWM_FREQ);
 
-    // Start with all channels OFF (servos limp — safe)
+    // Start with ALL channels fully OFF — no signal to any servo.
+    // setPWM(ch, 0, 4096) = always LOW = valid "off" state for hobby servos.
+    // NOTE: do NOT use setPin(i, 0, true) — that sets FULL ON (continuous 5V),
+    //       which causes servos to slam to max and draw huge current.
     for (uint8_t i = 0; i < 16; i++) {
-        pwm.setPWM(i, 0, 0);
-        pwm.setPin(i, 0, true);   // full OFF
+        pwm.setPWM(i, 0, 4096);   // always LOW = servo off / limp
     }
 
 #if USE_OE_PIN
@@ -96,7 +98,7 @@ void processCommand(const char* cmd) {
 
     } else if (sscanf(cmd, "OFF %d", &ch) == 1) {
         ch = constrain(ch, 0, 15);
-        pwm.setPin(ch, 0, true);
+        pwm.setPWM(ch, 0, 4096);  // always LOW = servo limp/off
         Serial.print("Ch "); Serial.print(ch);
         Serial.println(" → OFF");
 
@@ -109,7 +111,7 @@ void processCommand(const char* cmd) {
 
     } else if (strncmp(cmd, "ALLOFF", 6) == 0) {
         for (uint8_t i = 0; i < 16; i++) {
-            pwm.setPin(i, 0, true);
+            pwm.setPWM(i, 0, 4096);  // always LOW
         }
         Serial.println("ALL → OFF");
 
