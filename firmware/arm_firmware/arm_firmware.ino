@@ -50,6 +50,17 @@
 // Serial input buffer size
 #define BUF_SIZE 64
 
+// PCA9685 OE (Output Enable) pin — connect PCA9685 /OE pin to Arduino pin 4.
+// Pulling OE HIGH disables all outputs (servos get no signal = safe).
+// Pulling OE LOW enables outputs.
+// If you haven't wired this, set USE_OE_PIN to 0 — the code still works,
+// but power sequencing becomes critical.
+#define USE_OE_PIN  1
+#define OE_PIN      4    // Arduino digital pin connected to PCA9685 /OE
+
+// Startup settling time after enabling outputs (ms)
+#define STARTUP_DELAY_MS 500
+
 // ─── Globals ─────────────────────────────────────────────────────────
 Adafruit_PWMServoDriver pwm = Adafruit_PWMServoDriver(PCA9685_ADDR);
 
@@ -117,13 +128,31 @@ bool parsePacket(const char* packet, int* angles) {
 void setup() {
     Serial.begin(SERIAL_BAUD);
 
+#if USE_OE_PIN
+    // Immediately pull OE HIGH → disables all PCA9685 outputs.
+    // This MUST happen before pwm.begin() so servos never see a
+    // garbage PWM signal during initialization.
+    pinMode(OE_PIN, OUTPUT);
+    digitalWrite(OE_PIN, HIGH);   // outputs OFF
+#endif
+
+    // Initialize PCA9685
     pwm.begin();
+    pwm.setOscillatorFrequency(27000000);  // trim oscillator for accuracy
     pwm.setPWMFreq(PWM_FREQ);
 
-    // Move all servos to neutral (90°)
-    for (uint8_t i = 0; i < NUM_JOINTS; i++) {
-        pwm.setPWM(channels[i], 0, angleToPulse(90));
+    // Write neutral (90°) to ALL 16 channels before enabling outputs.
+    // This ensures every channel has a defined, safe pulse loaded.
+    for (uint8_t i = 0; i < 16; i++) {
+        pwm.setPWM(i, 0, angleToPulse(90));
     }
+
+    delay(STARTUP_DELAY_MS);   // let PCA9685 registers settle
+
+#if USE_OE_PIN
+    // Now enable outputs — servos see 90° right away, no glitch.
+    digitalWrite(OE_PIN, LOW);   // outputs ON
+#endif
 
     Serial.println("ARM_READY");
 }
