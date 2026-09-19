@@ -34,24 +34,23 @@ void setup() {
     pwm.setOscillatorFrequency(27000000);
     pwm.setPWMFreq(PWM_FREQ);
 
-    // Turn off channels 1, 2, 3, 4 (MG996R / MG90S arm joints)
+    // Turn off channels 0, 1, 2, 3, 4 (MG996R / MG90S arm joints)
+    pwm.setPWM(0, 0, 4096);
     pwm.setPWM(1, 0, 4096);
     pwm.setPWM(2, 0, 4096);
     pwm.setPWM(3, 0, 4096);
     pwm.setPWM(4, 0, 4096);
 
     Serial.println("PCA9685 initialized successfully!");
-    Serial.println("Sweeping Channel 5 (and Ch 0) now...");
+    Serial.println("Sweeping Channel 5 (Claw) only...");
 }
 
 int pulse = PULSE_MIN;
 int step = 5;
 
 void loop() {
-    // Send to Channel 5 (Claw)
+    // Send to Channel 5 (Claw only)
     pwm.setPWM(5, 0, pulse);
-    // Also send to Channel 0 just in case the claw is plugged in Ch 0
-    pwm.setPWM(0, 0, pulse);
 
     pulse += step;
     if (pulse >= PULSE_MAX || pulse <= PULSE_MIN) {
