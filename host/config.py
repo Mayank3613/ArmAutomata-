@@ -43,8 +43,8 @@ OPEN_PALM_THRESHOLD: float = 0.15     # [TUNE] Min fingertip-to-MCP distance for
 # ---------------------------------------------------------------------------
 CLAW_DIST_MIN: float = 0.05           # [TUNE] Normalised thumb-finger distance → fully closed
 CLAW_DIST_MAX: float = 0.35           # [TUNE] Normalised thumb-finger distance → fully open
-CLAW_OPEN_ANGLE: int = 90             # [TUNE] Servo angle for claw fully open
-CLAW_CLOSED_ANGLE: int = 30           # [TUNE] Servo angle for claw fully closed
+CLAW_OPEN_ANGLE: int = 80             # [TUNE] Servo angle for claw fully open
+CLAW_CLOSED_ANGLE: int = 20           # [TUNE] Servo angle for claw fully closed
 
 # ---------------------------------------------------------------------------
 # Smoothing
@@ -62,8 +62,8 @@ WRIST_ROT_NEUTRAL_ANGLE: int = 90     # [TUNE] Wrist rotation neutral (no twist)
 
 # Actuation limits per joint to prevent mechanical collisions
 # Order: [Base, Shoulder, Elbow, WristRot, WristExt, Claw]
-JOINT_MIN_ANGLES: list[int] = [0, 15, 10, 0, 0, 30]
-JOINT_MAX_ANGLES: list[int] = [180, 165, 170, 180, 180, 90]
+JOINT_MIN_ANGLES: list[int] = [0, 15, 10, 0, 0, 20]
+JOINT_MAX_ANGLES: list[int] = [180, 165, 170, 180, 180, 80]
 
 # Per-motor pulse counts for PCA9685 (at 50 Hz)
 # Ch 0-2 (MG996R): 150-464 (center=307), Ch 3-4 (MG90S): 102-512 (center=307), Ch 5 (SG90): 102-492

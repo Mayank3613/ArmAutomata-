@@ -21,6 +21,7 @@ from config import (
     CLAW_OPEN_ANGLE,
     CLAW_CLOSED_ANGLE,
     WRIST_ROT_NEUTRAL_ANGLE,
+    WRIST_EXT_NEUTRAL_ANGLE,
 )
 
 
@@ -163,3 +164,40 @@ def compute_wrist_rotation(landmarks: List[object]) -> int:
     # Map to servo range: 0° hand-roll → 90° servo (neutral)
     servo_angle = WRIST_ROT_NEUTRAL_ANGLE + angle_deg
     return int(round(max(0, min(180, servo_angle))))
+
+
+def compute_wrist_extension(landmarks: List[object]) -> int:
+    """Compute wrist extension (pitch) angle from the hand's tilt in the camera frame.
+
+    Uses the angle of the vector from the wrist (landmark 0) to the
+    middle-finger MCP (landmark 9) projected onto the vertical (Y) axis.
+
+    - Hand pointing forward (fingers up)   → 90° (neutral)
+    - Hand tilted upward (fingers away)     → >90°
+    - Hand tilted downward (fingers toward) → <90°
+
+    Args:
+        landmarks: 21 MediaPipe NormalizedLandmark objects.
+
+    Returns:
+        Wrist extension servo angle as an integer (0–180).
+    """
+    wrist = landmarks[_WRIST]
+    mcp = landmarks[_MIDDLE_MCP]
+
+    # Vector from wrist to middle MCP
+    dx = mcp.x - wrist.x
+    dy = mcp.y - wrist.y  # MediaPipe Y increases downward
+    dz = mcp.z - wrist.z  # Z: negative = closer to camera
+
+    # Pitch: angle of the wrist→MCP vector in the vertical plane.
+    # We use atan2(dz, -dy) so that:
+    #   fingers pointing up (-dy large)  → ~0° → servo neutral
+    #   fingers tilting toward camera (+dz) → positive angle → servo > neutral
+    #   fingers tilting away (-dz) → negative angle → servo < neutral
+    angle_rad = math.atan2(-dz, -dy)
+    angle_deg = math.degrees(angle_rad)
+
+    servo_angle = WRIST_EXT_NEUTRAL_ANGLE + angle_deg
+    return int(round(max(0, min(180, servo_angle))))
+

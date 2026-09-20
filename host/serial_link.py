@@ -66,26 +66,23 @@ class SerialLink:
 
     def send_angles(
         self,
-        base_spd: int,
-        shoulder_spd: int,
-        elbow_spd: int,
         wrist_rot: int,
         wrist_ext: int,
         claw: int,
     ) -> None:
-        """Send a six-motor command packet to the Arduino.
+        """Send a motor command packet to the Arduino.
+
+        MG996R continuous motors (Ch 0-2) are always sent speed 0 (stopped).
+        Only the 3 positional micro-servos are controlled.
 
         Args:
-            base_spd: Base rotation speed (-100 to +100, 0 = stop).
-            shoulder_spd: Shoulder rotation speed (-100 to +100, 0 = stop).
-            elbow_spd: Elbow rotation speed (-100 to +100, 0 = stop).
             wrist_rot: Wrist rotation angle (0–180).
             wrist_ext: Wrist extension angle (0–180).
             claw: Claw (gripper) angle (0–180).
         """
         if self._ser is None or not self._ser.is_open:
             return
-        packet = f"{base_spd},{shoulder_spd},{elbow_spd},{wrist_rot},{wrist_ext},{claw}\n"
+        packet = f"0,0,0,{wrist_rot},{wrist_ext},{claw}\n"
         self._ser.write(packet.encode("ascii"))
 
     def close(self) -> None:

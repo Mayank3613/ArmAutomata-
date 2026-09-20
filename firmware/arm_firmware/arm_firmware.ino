@@ -1,19 +1,20 @@
 /*
  * arm_firmware.ino
  * ================
- * Arduino Uno firmware for a 6-DOF gesture-controlled robotic arm.
+ * Arduino Uno firmware for a gesture-controlled robotic arm.
+ * WRIST-ONLY MODE: Only drives the 3 positional micro-servos.
  *
  * Motor layout:
- *   Ch 0 — Base Rotation      — MG996R (360° Continuous)
- *   Ch 1 — Shoulder Extension — MG996R (360° Continuous)
- *   Ch 2 — Elbow Extension    — MG996R (360° Continuous)
- *   Ch 3 — Wrist Rotation     — MG90S  (180° Positional)
- *   Ch 4 — Wrist Extension    — MG90S  (180° Positional)
- *   Ch 5 — Claw (2-finger)    — SG90   (180° Positional)
+ *   Ch 0 — Base Rotation      — MG996R (DISABLED — wrong motor variant)
+ *   Ch 1 — Shoulder Extension — MG996R (DISABLED — wrong motor variant)
+ *   Ch 2 — Elbow Extension    — MG996R (DISABLED — wrong motor variant)
+ *   Ch 3 — Wrist Rotation     — MG90S  (180° Positional)  ← ACTIVE
+ *   Ch 4 — Wrist Extension    — MG90S  (180° Positional)  ← ACTIVE
+ *   Ch 5 — Claw (2-finger)    — SG90   (180° Positional)  ← ACTIVE
  *
  * Receives packets over Serial from the Python host:
  *   "base_spd,shoulder_spd,elbow_spd,wrist_rot,wrist_ext,claw\n"
- *   - base_spd, shoulder_spd, elbow_spd: integers -100 to +100 (continuous speed, 0=stop)
+ *   - base_spd, shoulder_spd, elbow_spd: IGNORED (always 0, Ch 0-2 never driven)
  *   - wrist_rot, wrist_ext, claw: integers 0 to 180 (positional angles)
  *
  * Drives servos via a PCA9685 16-channel PWM board over I2C.
@@ -27,32 +28,25 @@
 #define PCA9685_ADDR 0x40
 
 // Per-channel pulse counts (50 Hz PWM, 4096 counts = 20 ms)
-// 1.0 ms = ~205, 1.5 ms (center / neutral) = ~307, 2.0 ms = ~410
-// MG996R (Ch 0, 1, 2): ~0.73 ms – 2.27 ms (150 – 464, center = 307)
 // MG90S  (Ch 3, 4):    ~0.50 ms – 2.50 ms (102 – 512, center = 307)
 // SG90   (Ch 5):       ~0.50 ms – 2.40 ms (102 – 492, center = 297)
+//
+// Ch 0-2 (MG996R) are NEVER driven — values kept for array indexing only.
 const uint16_t PULSE_MIN[6] = {150, 150, 150, 102, 102, 102};
 const uint16_t PULSE_MAX[6] = {464, 464, 464, 512, 512, 492};
-
-// Continuous rotation base motor (MG996R on Ch 0)
-// At 50 Hz, 1.5 ms neutral = 307 counts
-// Reduced speed by half (throttle deflection halved from +/-157 to +/-78 counts)
-#define BASE_STOP_PULSE 307
-#define BASE_CW_FULL    229
-#define BASE_CCW_FULL   385
 
 // PWM frequency for standard hobby servos
 #define PWM_FREQ 50    // Hz
 
 // Channel assignments on the PCA9685
-#define CH_BASE       0
-#define CH_SHOULDER   1
-#define CH_ELBOW      2
-#define CH_WRIST_ROT  3
-#define CH_WRIST_EXT  4
-#define CH_CLAW       5
+#define CH_BASE       0   // DISABLED — MG996R, do not touch
+#define CH_SHOULDER   1   // DISABLED — MG996R, do not touch
+#define CH_ELBOW      2   // DISABLED — MG996R, do not touch
+#define CH_WRIST_ROT  3   // ACTIVE
+#define CH_WRIST_EXT  4   // ACTIVE
+#define CH_CLAW       5   // ACTIVE
 
-// Number of joints
+// Number of joints in the packet (kept at 6 for protocol compatibility)
 #define NUM_JOINTS 6
 
 // Serial baud rate — must match host
@@ -86,24 +80,8 @@ const uint8_t channels[NUM_JOINTS] = {
 // ─── Helpers ─────────────────────────────────────────────────────────
 
 /**
- * Convert base speed (-100 to +100) to PCA9685 pulse count.
- * 0 = STOP (BASE_STOP_PULSE)
- * >0 = CCW rotation
- * <0 = CW rotation
- */
-uint16_t baseSpeedToPulse(int speed) {
-    speed = constrain(speed, -100, 100);
-    if (speed == 0) {
-        return BASE_STOP_PULSE;
-    } else if (speed > 0) {
-        return (uint16_t)map(speed, 0, 100, BASE_STOP_PULSE, BASE_CCW_FULL);
-    } else {
-        return (uint16_t)map(speed, -100, 0, BASE_CW_FULL, BASE_STOP_PULSE);
-    }
-}
-
-/**
- * Convert an angle (0-180) for a given joint index (1-5) to PCA9685 pulse count.
+ * Convert an angle (0-180) for a given joint index to PCA9685 pulse count.
+ * Only used for channels 3, 4, 5 (positional servos).
  */
 uint16_t angleToPulse(uint8_t chIdx, int angle) {
     angle = constrain(angle, 0, 180);
@@ -115,7 +93,7 @@ uint16_t angleToPulse(uint8_t chIdx, int angle) {
  * Returns true on success (exactly NUM_JOINTS comma-separated values).
  * Malformed packets are silently discarded.
  */
-bool parsePacket(const char* packet, int* angles) {
+bool parsePacket(const char* packet, int* values) {
     int fieldCount = 0;
     int value = 0;
     bool hasDigits = false;
@@ -141,7 +119,7 @@ bool parsePacket(const char* packet, int* angles) {
             if (fieldCount >= NUM_JOINTS) {
                 return false;  // too many fields
             }
-            angles[fieldCount++] = negative ? -value : value;
+            values[fieldCount++] = negative ? -value : value;
             value = 0;
             hasDigits = false;
             negative = false;
@@ -170,15 +148,18 @@ void setup() {
     pwm.setOscillatorFrequency(27000000);  // trim oscillator for accuracy
     pwm.setPWMFreq(PWM_FREQ);
 
-    // Channels 0, 1, 2 (continuous MG996R) boot completely stopped (PWM cut off).
-    // Channels 3, 4, 5 (positional micro servos) boot at neutral 90°.
-    pwm.setPWM(channels[0], 0, 4096);
-    pwm.setPWM(channels[1], 0, 4096);
-    pwm.setPWM(channels[2], 0, 4096);
+    // Channels 0, 1, 2 (MG996R): CUT OFF permanently — never send PWM.
+    // This ensures the wrong-variant motors receive no signal at all.
+    pwm.setPWM(CH_BASE,     0, 4096);  // PWM off
+    pwm.setPWM(CH_SHOULDER, 0, 4096);  // PWM off
+    pwm.setPWM(CH_ELBOW,    0, 4096);  // PWM off
+
+    // Channels 3, 4, 5 (positional micro servos): boot at neutral 90°.
     for (uint8_t i = 3; i < NUM_JOINTS; i++) {
         pwm.setPWM(channels[i], 0, angleToPulse(i, 90));
     }
-    // Turn off unused channels
+
+    // Turn off unused channels (6-15)
     for (uint8_t i = NUM_JOINTS; i < 16; i++) {
         pwm.setPWM(i, 0, 4096);
     }
@@ -186,7 +167,7 @@ void setup() {
     delay(STARTUP_DELAY_MS);   // let PCA9685 registers settle
 
 #if USE_OE_PIN
-    // Now enable outputs — MG996R motors are stopped, other servos see 90° right away.
+    // Now enable outputs — MG996R channels are off, positional servos see 90°.
     digitalWrite(OE_PIN, LOW);   // outputs ON
 #endif
 
@@ -205,16 +186,9 @@ void loop() {
 
                 int values[NUM_JOINTS];
                 if (parsePacket(buf, values)) {
-                    // Channels 0, 1, 2: Continuous MG996R speeds (-100 to +100)
-                    for (uint8_t i = 0; i < 3; i++) {
-                        int speed = constrain(values[i], -100, 100);
-                        if (speed == 0) {
-                            // Completely cut PWM signal: stops continuous motor dead, zero creep!
-                            pwm.setPWM(channels[i], 0, 4096);
-                        } else {
-                            pwm.setPWM(channels[i], 0, baseSpeedToPulse(speed));
-                        }
-                    }
+                    // Channels 0, 1, 2 (MG996R): COMPLETELY IGNORED.
+                    // No matter what values[0..2] contain, we never touch these channels.
+                    // They stay permanently off (PWM cut, set in setup()).
 
                     // Channels 3, 4, 5: Positional micro-servo angles (0 to 180)
                     for (uint8_t i = 3; i < NUM_JOINTS; i++) {

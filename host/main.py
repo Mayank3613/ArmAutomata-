@@ -1,22 +1,13 @@
 """
-Main control loop for the Gesture-Controlled 6-DOF Robotic Arm.
+Main control loop for the Gesture-Controlled Robotic Arm (wrist-only mode).
 
-Uses TWO trackers for hierarchical body tracking:
-  - Pose Landmarker → shoulder, elbow, wrist (arm joint angles)
-  - Hand Landmarker → fingers (claw + wrist rotation + gesture state)
+Uses ONLY the Hand Landmarker to control the 3 positional micro-servos:
+  Ch 3 — Wrist Rotation  (MG90S, 180° Positional) ← from hand roll
+  Ch 4 — Wrist Extension (MG90S, 180° Positional) ← from hand pitch
+  Ch 5 — Claw            (SG90,  180° Positional)  ← thumb-to-fingers distance
 
-Tracking modes (automatic, based on what's visible):
-  FULL_ARM  — shoulder + elbow + wrist in view → direct joint mirroring
-  FOREARM   — elbow + wrist in view → elbow angle + estimated shoulder
-  HAND_ONLY — only hand in view → IK from wrist position (fallback)
-
-Motor layout:
-  Ch 0 — Base Rotation       (MG996R, 360° Continuous)
-  Ch 1 — Shoulder Extension  (MG996R, 360° Continuous)
-  Ch 2 — Elbow Extension     (MG996R, 360° Continuous)
-  Ch 3 — Wrist Rotation      (MG90S, 180° Positional)   ← from hand roll
-  Ch 4 — Wrist Extension     (MG90S, 180° Positional)   ← keeps end-effector level
-  Ch 5 — Claw                (SG90, 180° Positional)    ← thumb-to-fingers distance
+MG996R continuous motors (Ch 0–2: base, shoulder, elbow) are DISABLED
+(always sent speed 0) because the wrong motor variant is installed.
 
 Usage:
     python main.py                           # defaults from config.py
@@ -28,7 +19,6 @@ from __future__ import annotations
 
 import argparse
 import sys
-import time
 
 import cv2
 
@@ -41,20 +31,14 @@ from config import (
     SERIAL_BAUD,
     JOINT_MIN_ANGLES,
     JOINT_MAX_ANGLES,
-    BASE_SPEED_DEG_PER_SEC,
-    SHOULDER_SPEED_DEG_PER_SEC,
-    ELBOW_SPEED_DEG_PER_SEC,
-    POSITIVE_SPEED_FACTOR,
-    NEGATIVE_SPEED_FACTOR,
-    BASE_DEADBAND_DEG,
-    BASE_INVERT_DIRECTION,
-    SHOULDER_INVERT_DIRECTION,
-    ELBOW_INVERT_DIRECTION,
 )
 from hand_tracker import HandTracker
-from body_tracker import BodyTracker
-from gestures import classify_gesture
-from arm_mapper import determine_tracking_mode, compute_robot_angles, ContinuousJointTracker
+from gestures import (
+    classify_gesture,
+    compute_claw_angle,
+    compute_wrist_rotation,
+    compute_wrist_extension,
+)
 from smoothing import AngleSmoother
 from serial_link import SerialLink
 
@@ -76,7 +60,7 @@ def list_serial_ports() -> None:
 def parse_args() -> argparse.Namespace:
     """Parse CLI arguments."""
     parser = argparse.ArgumentParser(
-        description="Gesture-controlled 6-DOF robotic arm host application."
+        description="Gesture-controlled robotic arm — wrist-only mode."
     )
     parser.add_argument(
         "--port",
@@ -106,38 +90,18 @@ def parse_args() -> argparse.Namespace:
     return args
 
 
+def _clamp(value: float, lo: float, hi: float) -> float:
+    """Clamp *value* to [lo, hi]."""
+    return max(lo, min(hi, value))
+
+
 def main() -> None:
     """Entry point — runs the capture/control loop."""
     args = parse_args()
 
     # ---- Initialise components ----
     hand_tracker = HandTracker()
-    body_tracker = BodyTracker()
-    base_tracker = ContinuousJointTracker(
-        initial_angle=90.0,
-        speed_deg_per_sec=BASE_SPEED_DEG_PER_SEC,
-        deadband_deg=BASE_DEADBAND_DEG,
-        invert=BASE_INVERT_DIRECTION,
-        min_angle=float(JOINT_MIN_ANGLES[0]),
-        max_angle=float(JOINT_MAX_ANGLES[0]),
-    )
-    shoulder_tracker = ContinuousJointTracker(
-        initial_angle=90.0,
-        speed_deg_per_sec=SHOULDER_SPEED_DEG_PER_SEC,
-        deadband_deg=BASE_DEADBAND_DEG,
-        invert=SHOULDER_INVERT_DIRECTION,
-        min_angle=float(JOINT_MIN_ANGLES[1]),
-        max_angle=float(JOINT_MAX_ANGLES[1]),
-    )
-    elbow_tracker = ContinuousJointTracker(
-        initial_angle=90.0,
-        speed_deg_per_sec=ELBOW_SPEED_DEG_PER_SEC,
-        deadband_deg=BASE_DEADBAND_DEG,
-        invert=ELBOW_INVERT_DIRECTION,
-        min_angle=float(JOINT_MIN_ANGLES[2]),
-        max_angle=float(JOINT_MAX_ANGLES[2]),
-    )
-    # 3 positional channels (WristRot, WristExt, Claw) smoothed together
+    # 3 positional channels: WristRot, WristExt, Claw
     smoother = AngleSmoother(num_channels=3)
     link: SerialLink | None = None
 
@@ -146,13 +110,6 @@ def main() -> None:
     except (RuntimeError, FileNotFoundError) as exc:
         print(f"[ERROR] {exc}")
         sys.exit(1)
-
-    try:
-        body_tracker.open()
-    except FileNotFoundError as exc:
-        print(f"[WARN] {exc}")
-        print("[INFO] Continuing with hand-only tracking.")
-        body_tracker = None  # type: ignore[assignment]
 
     if not args.no_serial:
         link = SerialLink(port=args.port, baud=args.baud)
@@ -164,131 +121,78 @@ def main() -> None:
             link = None
 
     # ---- State ----
-    prev_angles = (
-        90.0,                            # base
-        90.0,                            # shoulder
-        90.0,                            # elbow
-        float(WRIST_ROT_NEUTRAL_ANGLE),  # wrist rotation
-        float(WRIST_EXT_NEUTRAL_ANGLE),  # wrist extension
-        float(CLAW_OPEN_ANGLE),          # claw
-    )
-    last_sent_speeds = (0, 0, 0)
-    int_micro = (
+    int_angles = (
         int(WRIST_ROT_NEUTRAL_ANGLE),
         int(WRIST_EXT_NEUTRAL_ANGLE),
         int(CLAW_OPEN_ANGLE),
     )
-    last_time = time.time()
 
-    # Colours for tracking mode display
-    MODE_COLOURS = {
-        "FULL_ARM": (0, 255, 0),    # green
-        "FOREARM": (0, 200, 255),   # orange
-        "HAND_ONLY": (255, 200, 0), # cyan
-    }
-
-    print(f"[main] Starting capture loop.  Press 'q' in the {WINDOW_NAME} window to quit.")
+    print(f"[main] Wrist-only mode. Press 'q' in the {WINDOW_NAME} window to quit.")
 
     try:
         while True:
-            now = time.time()
-            dt = now - last_time
-            last_time = now
-
             ok, frame = hand_tracker.read_frame()
             if not ok or frame is None:
                 print("[WARN] Failed to read frame — retrying…")
                 continue
 
-            # ---- Detect body pose ----
-            pose_landmarks = None
-            if body_tracker is not None:
-                pose_landmarks, frame = body_tracker.detect(frame)
-
             # ---- Detect hand landmarks ----
             hand_landmarks, frame = hand_tracker.detect(frame)
-
-            # ---- Determine tracking mode ----
-            mode, arm_side = determine_tracking_mode(pose_landmarks)
 
             # ---- Check gesture (FIST = freeze) ----
             gesture = "UNKNOWN"
             if hand_landmarks is not None:
                 gesture = classify_gesture(hand_landmarks)
 
-            # ---- Compute and send angles / continuous speeds ----
+            # ---- Compute and send angles ----
             if gesture == "FIST":
-                # Freeze — hold current pose, immediately halt all continuous motors
-                b_spd = base_tracker.stop()
-                s_spd = shoulder_tracker.stop()
-                e_spd = elbow_tracker.stop()
-                current_speeds = (b_spd, s_spd, e_spd)
-                if link is not None and any(s != 0 for s in last_sent_speeds):
-                    link.send_angles(0, 0, 0, *int_micro)
-                    last_sent_speeds = (0, 0, 0)
-
+                # Freeze — hold current servo positions
                 cv2.putText(
                     frame, "FIST — HOLD", (10, 40),
                     cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 0, 255), 2,
                 )
                 cv2.putText(
                     frame,
-                    f"Spd:[{b_spd},{s_spd},{e_spd}] "
-                    f"Pos:[{int(round(base_tracker.virtual_angle))},{int(round(shoulder_tracker.virtual_angle))},{int(round(elbow_tracker.virtual_angle))}] "
-                    f"WR:{int_micro[0]} WE:{int_micro[1]} C:{int_micro[2]}",
+                    f"WR:{int_angles[0]}  WE:{int_angles[1]}  Claw:{int_angles[2]}",
                     (10, 75),
-                    cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 0, 255), 1,
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 0, 255), 1,
                 )
 
-            elif gesture != "UNKNOWN" or (pose_landmarks is not None and hand_landmarks is None):
-                # Compute robot angles from available landmarks
-                angles = compute_robot_angles(
-                    pose_landmarks, hand_landmarks,
-                    mode, arm_side, prev_angles,
-                )
-                prev_angles = angles
+            elif gesture == "TRACKING":
+                # Compute all 3 positional angles from hand landmarks
+                wrist_rot = compute_wrist_rotation(hand_landmarks)
+                wrist_ext = compute_wrist_extension(hand_landmarks)
+                claw = compute_claw_angle(hand_landmarks)
 
-                # Smooth the 3 positional micro-servos (WristRot, WristExt, Claw)
-                smoothed_micro, micro_changed = smoother.update(angles[3:])
-                int_micro = tuple(int(round(a)) for a in smoothed_micro)
+                # Clamp to joint limits (channels 3, 4, 5)
+                wrist_rot = int(_clamp(wrist_rot, JOINT_MIN_ANGLES[3], JOINT_MAX_ANGLES[3]))
+                wrist_ext = int(_clamp(wrist_ext, JOINT_MIN_ANGLES[4], JOINT_MAX_ANGLES[4]))
+                claw = int(_clamp(claw, JOINT_MIN_ANGLES[5], JOINT_MAX_ANGLES[5]))
 
-                # ContinuousJointTrackers calculate real-time speeds for continuous MG996R motors (Ch 0, 1, 2)
-                b_spd = base_tracker.update(angles[0], dt)
-                s_spd = shoulder_tracker.update(angles[1], dt)
-                e_spd = elbow_tracker.update(angles[2], dt)
-                current_speeds = (b_spd, s_spd, e_spd)
-                speeds_changed = (current_speeds != last_sent_speeds)
+                # Smooth
+                raw_angles = (float(wrist_rot), float(wrist_ext), float(claw))
+                smoothed, changed = smoother.update(raw_angles)
+                int_angles = tuple(int(round(a)) for a in smoothed)
 
-                if link is not None and (micro_changed or speeds_changed):
-                    link.send_angles(b_spd, s_spd, e_spd, *int_micro)
-                    last_sent_speeds = current_speeds
+                if link is not None and changed:
+                    link.send_angles(*int_angles)
 
                 # ---- HUD overlay ----
-                colour = MODE_COLOURS.get(mode, (200, 200, 200))
                 cv2.putText(
-                    frame, f"{mode} ({arm_side})", (10, 40),
-                    cv2.FONT_HERSHEY_SIMPLEX, 0.8, colour, 2,
+                    frame, "TRACKING", (10, 40),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 255, 0), 2,
                 )
                 cv2.putText(
                     frame,
-                    f"Spd:[{b_spd},{s_spd},{e_spd}] "
-                    f"Pos:[{int(round(base_tracker.virtual_angle))},{int(round(shoulder_tracker.virtual_angle))},{int(round(elbow_tracker.virtual_angle))}] "
-                    f"WR:{int_micro[0]} WE:{int_micro[1]} C:{int_micro[2]}",
+                    f"WR:{int_angles[0]}  WE:{int_angles[1]}  Claw:{int_angles[2]}",
                     (10, 75),
-                    cv2.FONT_HERSHEY_SIMPLEX, 0.5, (200, 200, 200), 1,
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.6, (200, 200, 200), 1,
                 )
 
             else:
-                # Loss of tracking: emergency halt all continuous motors immediately
-                b_spd = base_tracker.stop()
-                s_spd = shoulder_tracker.stop()
-                e_spd = elbow_tracker.stop()
-                if link is not None and any(s != 0 for s in last_sent_speeds):
-                    link.send_angles(0, 0, 0, *int_micro)
-                    last_sent_speeds = (0, 0, 0)
-
+                # No hand detected
                 cv2.putText(
-                    frame, "NO TRACKING", (10, 40),
+                    frame, "NO HAND", (10, 40),
                     cv2.FONT_HERSHEY_SIMPLEX, 0.8, (100, 100, 100), 2,
                 )
 
@@ -302,8 +206,6 @@ def main() -> None:
 
     finally:
         hand_tracker.close()
-        if body_tracker is not None:
-            body_tracker.close()
         if link is not None:
             link.close()
         cv2.destroyAllWindows()
