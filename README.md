@@ -1,51 +1,266 @@
 # ArmAutomata — Gesture-Controlled 6-DOF Robotic Arm
 
-A real-time gesture-controlled robotic arm. A webcam captures your arm and hand; a Python host detects body pose + hand landmarks, computes joint angles, and streams them to an Arduino Uno over USB serial. The Arduino drives six servos via a PCA9685 PWM board.
+A real-time gesture-controlled robotic arm that uses computer vision to track your hand and mirror its movements onto physical servos. A webcam captures your hand; a Python host uses **MediaPipe Hand Landmarker** (a pre-trained ML model) to detect 21 hand landmarks in real-time, computes servo angles from hand geometry, and streams them to an Arduino Uno over USB serial. The Arduino drives servos via a PCA9685 PWM board.
+
+> **Current Mode: Wrist-Only** — The MG996R motors (Ch 0–2) are continuous rotation variants and are **permanently disabled**. Only the 3 positional micro-servos (wrist rotation, wrist extension, claw) are vision-controlled.
 
 ## Architecture
 
 ```
-Webcam → Pose Landmarker (shoulder/elbow/wrist)
-       → Hand Landmarker (fingers/gestures)
-       → Arm Mapper → Smoother → Serial → Arduino → PCA9685 → Servos
+Webcam → Hand Landmarker (21 hand landmarks)
+       → Gesture Classifier (TRACKING / FIST)
+       → Angle Computation (wrist rot, wrist ext, claw)
+       → EMA Smoother + Deadband
+       → Serial → Arduino → PCA9685 → 3 Positional Servos
 ```
 
-### Tracking Modes (automatic)
+---
 
-| Mode | What's visible | How arm is controlled |
-|------|----------------|----------------------|
-| 🟢 **FULL_ARM** | Shoulder + elbow + wrist | Direct joint-angle mirroring |
-| 🟠 **FOREARM** | Elbow + wrist | Elbow angle + estimated shoulder |
-| 🔵 **HAND_ONLY** | Just the hand | IK from wrist position |
+## ML Model — MediaPipe Hand Landmarker
 
-### Motor Layout
+The system uses Google's **MediaPipe Hand Landmarker** (Tasks API), a pre-trained deep learning model that runs entirely on-device (CPU, no GPU required).
 
-| PCA9685 Ch | Joint              | Servo  | Range / Limits | Pulse Count | Control Source                    |
-|------------|--------------------|--------|----------------|-------------|-----------------------------------|
-| 0          | Base Rotation      | MG996R (360° Continuous) | -100 to +100 speed | 150 – 464 (stop: 307) | Virtual tracker from wrist horizontal position |
-| 1          | Shoulder Extension | MG996R (360° Continuous) | -100 to +100 speed | 150 – 464 (stop: 307) | Virtual tracker from upper arm angle |
-| 2          | Elbow Extension    | MG996R (360° Continuous) | -100 to +100 speed | 150 – 464 (stop: 307) | Virtual tracker from elbow interior angle |
-| 3          | Wrist Rotation     | MG90S  (180° Positional) | 0° – 180° angle    | 102 – 512   | Hand roll angle in camera         |
-| 4          | Wrist Extension    | MG90S  (180° Positional) | 0° – 180° angle    | 102 – 512   | Auto-levels end-effector          |
-| 5          | Claw (2-finger)    | SG90   (180° Positional) | 30° – 90° angle    | 102 – 492   | Thumb-to-fingers distance         |
+### Model Details
 
-### Gesture Control
+| Property | Value |
+|----------|-------|
+| **Model file** | `hand_landmarker.task` (~7.5 MB, float16) |
+| **Architecture** | Two-stage: Palm Detector (BlazePalm) → Hand Landmark Model (BlazHand) |
+| **Input** | RGB video frames (640×480 @ ~30 FPS) |
+| **Output** | 21 3D hand landmarks per detected hand |
+| **Inference** | ~15–30ms per frame on CPU |
+| **Running mode** | `VIDEO` (sequential frames with monotonic timestamps) |
 
-| Gesture       | Action                                                   |
-|---------------|----------------------------------------------------------|
-| **Open hand** | Arm follows your arm; claw opens proportionally           |
-| **Pinch/Grab**| Arm follows your arm; claw closes proportionally          |
-| **Fist**      | Freeze — arm holds current pose                           |
+### The 21 Hand Landmarks
+
+```
+         ╭── 8 (INDEX_TIP)
+         │
+    7────6────5 (INDEX_MCP)
+    │              │
+    8              │
+                   │
+4 (THUMB_TIP)     9 (MIDDLE_MCP) ──10──11──12 (MIDDLE_TIP)
+│                  │
+3                 13 (RING_MCP) ──14──15──16 (RING_TIP)
+│                  │
+2 (THUMB_MCP)     17 (PINKY_MCP) ──18──19──20 (PINKY_TIP)
+│                  │
+└──────── 0 (WRIST) ──────────┘
+```
+
+Each landmark provides normalised `(x, y, z)` coordinates:
+- **x, y** ∈ [0, 1] — position in the image frame
+- **z** — relative depth (negative = closer to camera), normalised by palm size
+
+### How We Use the Landmarks
+
+| Servo | Landmarks Used | Computation |
+|-------|---------------|-------------|
+| **Wrist Rotation** | 0 (Wrist) → 9 (Middle MCP) | Roll angle: `atan2(dx, -dy)` of the wrist-to-MCP vector in the image plane |
+| **Wrist Extension** | 0 (Wrist) → 9 (Middle MCP) | Pitch angle: `atan2(-dz, -dy)` using the Z (depth) component |
+| **Claw** | 4 (Thumb tip) → 8, 12, 16, 20 (Fingertips) | Minimum 3D distance from thumb to any fingertip, normalised by palm size |
+| **Gesture (FIST)** | 5, 9, 13, 17 (MCPs) + 8, 12, 16, 20 (Tips) | All four fingertip-to-MCP distances below threshold → FIST |
+
+### Model Download
+
+The model is **not** included in the repo (too large for git). Download it:
+
+```bash
+# macOS / Linux
+curl -L -o host/hand_landmarker.task \
+  https://storage.googleapis.com/mediapipe-models/hand_landmarker/hand_landmarker/float16/1/hand_landmarker.task
+
+# Windows (PowerShell)
+Invoke-WebRequest -Uri "https://storage.googleapis.com/mediapipe-models/hand_landmarker/hand_landmarker/float16/1/hand_landmarker.task" -OutFile "host\hand_landmarker.task"
+```
+
+---
+
+## Inverse Kinematics (Reference)
+
+> **Note:** IK is currently unused in wrist-only mode but is retained in [`host/kinematics.py`](host/kinematics.py) for future use when positional MG996R motors are installed.
+
+The IK solver computes joint angles for a **planar 2-link arm** with base rotation, given a target (x, y, z) position in millimetres.
+
+### Coordinate Frame
+
+- **Origin**: Base rotation axis, on the table surface
+- **Z axis**: Points **up**
+- **XY plane**: Horizontal; the arm reaches outward in this plane
+- `θ_base` rotates in the XY plane (0° = +X, 90° = straight ahead)
+
+### Arm Geometry
+
+```
+                    ┌─── Wrist (end effector)
+                    │
+              L2 (98mm)
+                    │
+              Elbow ┤ ← θ_elbow (interior angle)
+                    │
+              L1 (105mm)
+                    │
+           Shoulder ┤ ← θ_shoulder (from horizontal)
+                    │
+         Base (60mm height)
+         ═══════════╧═══════════  ← Table
+```
+
+| Parameter | Value | Description |
+|-----------|-------|-------------|
+| `L1_MM` | 105 mm | Shoulder-to-elbow link length |
+| `L2_MM` | 98 mm | Elbow-to-wrist link length |
+| `BASE_HEIGHT_MM` | 60 mm | Height of the shoulder pivot above the table |
+| **Max reach** | 203 mm | L1 + L2 (fully extended) |
+| **Min reach** | 7 mm | \|L1 − L2\| (fully folded) |
+
+### IK Algorithm
+
+**Step 1 — Base rotation** (top-down view):
+
+$$\theta_{base} = \text{atan2}(y, x)$$
+
+**Step 2 — Planar 2-link IK** (in the vertical plane):
+
+Compute the distance from shoulder to target:
+
+$$r = \sqrt{x^2 + y^2}, \quad z_{eff} = z - h_{base}$$
+
+$$d = \sqrt{r^2 + z_{eff}^2}$$
+
+If $d$ exceeds the arm's reach, it's clamped to $L_1 + L_2$ (arm stretches toward target).
+
+**Step 3 — Elbow angle** via the Law of Cosines:
+
+$$\cos(\gamma) = \frac{L_1^2 + L_2^2 - d^2}{2 \cdot L_1 \cdot L_2}$$
+
+$$\theta_{elbow} = \arccos(\gamma)$$
+
+Where $\gamma$ is the interior angle at the elbow: 180° = fully extended, 0° = fully folded.
+
+**Step 4 — Shoulder angle**:
+
+$$\cos(\alpha) = \frac{L_1^2 + d^2 - L_2^2}{2 \cdot L_1 \cdot d}, \quad \phi = \text{atan2}(z_{eff}, r)$$
+
+$$\theta_{shoulder} = \phi + \alpha$$
+
+**Step 5 — Wrist compensation** (keeps end-effector level):
+
+$$\theta_{wrist} = \theta_{shoulder} + \theta_{elbow} - 90°$$
+
+### FK Round-Trip Validation
+
+```bash
+python host/kinematics.py
+```
+
+This runs IK → FK on 5 test points and verifies the round-trip error is < 5mm.
+
+---
+
+## Motor Layout
+
+| PCA9685 Ch | Joint | Servo | Operating Range | Status | Control Source |
+|:----------:|-------|-------|:---------------:|:------:|---------------|
+| 0 | Base Rotation | MG996R (360° Continuous) | — | **DISABLED** | PWM permanently off |
+| 1 | Shoulder Extension | MG996R (360° Continuous) | — | **DISABLED** | PWM permanently off |
+| 2 | Elbow Extension | MG996R (360° Continuous) | — | **DISABLED** | PWM permanently off |
+| **3** | **Wrist Rotation** | MG90S (180° Positional) | **0° – 180°** (90° = neutral) | ✅ Active | Hand roll angle |
+| **4** | **Wrist Extension** | MG90S (180° Positional) | **0° – 180°** (90° = upright) | ✅ Active | Hand pitch angle |
+| **5** | **Claw (2-finger)** | SG90 (180° Positional) | **20° – 80°** (80° = open, 20° = closed) | ✅ Active | Thumb-to-fingertip distance |
+
+### Servo Specifications
+
+| Servo | Type | Torque | Voltage | Pulse Range (PCA9685) |
+|-------|------|--------|---------|----------------------|
+| **MG996R** | 360° Continuous | 9.4 kg·cm | 4.8–7.2V | 150 – 464 (stop: 307) |
+| **MG90S** | 180° Positional | 1.8 kg·cm | 4.8–6V | 102 – 512 (center: 307) |
+| **SG90** | 180° Positional | 1.2 kg·cm | 4.8–5V | 102 – 492 (center: 297) |
+
+### Pulse Width ↔ PCA9685 Counts (at 50 Hz)
+
+At 50 Hz PWM, one period = 20 ms, and the PCA9685 divides it into 4096 counts:
+
+$$\text{counts} = \frac{\text{pulse width (ms)}}{20\text{ ms}} \times 4096$$
+
+| Pulse Width | Counts | Typical Meaning |
+|:-----------:|:------:|:---------------:|
+| 0.5 ms | 102 | 0° (min position) |
+| 1.0 ms | 205 | ~45° |
+| 1.5 ms | 307 | 90° (center / stop) |
+| 2.0 ms | 410 | ~135° |
+| 2.5 ms | 512 | 180° (max position) |
+
+---
+
+## Gesture Control
+
+| Gesture | Detection Method | Action |
+|---------|-----------------|--------|
+| **Open hand** (TRACKING) | Any finger extended (tip-to-MCP distance > threshold) | Servos track hand — wrist rotates, extends, claw opens |
+| **Pinch / Grab** (TRACKING) | Thumb close to fingertips | Claw closes proportionally |
+| **Fist** (FIST) | All 4 fingertip-to-MCP distances < 0.15 (normalised) | Freeze — all servos hold current position |
+| **No hand** (UNKNOWN) | No hand detected in frame | Servos hold last known position |
+
+### Claw Proportional Mapping
+
+The claw angle is computed from the **minimum** 3D distance between the thumb tip and any of the four fingertips (index, middle, ring, pinky), normalised by palm size:
+
+| Normalised Distance | Claw Angle | State |
+|:-------------------:|:----------:|:-----:|
+| ≤ 0.15 | 20° | Fully closed |
+| 0.30 | 50° | Half open |
+| ≥ 0.45 | 80° | Fully open |
+
+---
+
+## Signal Processing — Smoothing & Deadband
+
+Raw landmark data from MediaPipe is noisy. Two filters prevent servo jitter:
+
+### Exponential Moving Average (EMA)
+
+$$\hat{\theta}_t = \alpha \cdot \theta_{raw} + (1 - \alpha) \cdot \hat{\theta}_{t-1}$$
+
+| Parameter | Value | Effect |
+|-----------|:-----:|--------|
+| `SMOOTHING_ALPHA` | 0.15 | Lower = smoother but slower response |
+
+### Deadband
+
+Ignore angle changes smaller than `DEADBAND_DEGREES` = **2.0°**. A new serial packet is only sent when at least one channel has moved more than 2° since the last transmission.
+
+---
+
+## Serial Protocol
+
+The Python host sends ASCII packets over USB serial at **115200 baud**:
+
+```
+0,0,0,<wrist_rot>,<wrist_ext>,<claw>\n
+```
+
+| Field | Range | Description |
+|-------|:-----:|-------------|
+| Fields 0–2 | Always `0` | MG996R speeds (disabled) |
+| `wrist_rot` | 0–180 | Wrist rotation angle |
+| `wrist_ext` | 0–180 | Wrist extension angle |
+| `claw` | 20–80 | Claw angle |
+
+The firmware parses this as 6 comma-separated integers, ignores fields 0–2, and drives channels 3–5 via `angleToPulse()`.
+
+---
 
 ## Hardware
 
 ### Components
 
 | # | Component | Spec | Qty |
-|---|-----------|------|-----|
+|---|-----------|------|:---:|
 | 1 | Arduino Uno R3 | ATmega328P | 1 |
 | 2 | PCA9685 Servo Driver | 16-ch I2C PWM | 1 |
-| 3 | MG996R Servo | Base, Shoulder, Elbow | 3 |
+| 3 | MG996R Servo | Base, Shoulder, Elbow (currently disabled) | 3 |
 | 4 | MG90S Servo | Wrist Rotation, Wrist Extension | 2 |
 | 5 | SG90 Servo | Claw | 1 |
 | 6 | USB Webcam | Any UVC camera | 1 |
@@ -55,8 +270,6 @@ Webcam → Pose Landmarker (shoulder/elbow/wrist)
 ### Wiring
 
 > 📖 **Full Guide**: See [WIRING_GUIDE.md](WIRING_GUIDE.md) for detailed schematics, pin-by-pin charts, and pre-flight checklists.
-
-The architecture has two independent paths:
 
 ```
 1. Power Path (Servo Rail):
@@ -70,7 +283,7 @@ The architecture has two independent paths:
                                                         └── GND      ──► PCA9685 GND
 ```
 
-> ⚠️ **Note on Power**: The Arduino is powered directly by the laptop via USB. The buck converter is used because the SMPS supplies a higher voltage than recommended for the servos; it steps down the SMPS voltage to a regulated 5.0V for the PCA9685 servo driver board. **Never** power the servos directly from the Arduino's 5V pin.
+> ⚠️ **Note on Power**: The Arduino is powered directly by the laptop via USB. The buck converter steps the SMPS voltage down to a regulated 5.0V for the PCA9685 servo driver board. **Never** power the servos directly from the Arduino's 5V pin.
 
 ---
 
@@ -119,123 +332,63 @@ source venv/bin/activate
 pip install -r requirements.txt
 ```
 
-### 3. Download MediaPipe models
-
-#### Windows (PowerShell)
-```powershell
-Invoke-WebRequest -Uri "https://storage.googleapis.com/mediapipe-models/hand_landmarker/hand_landmarker/float16/1/hand_landmarker.task" -OutFile "host\hand_landmarker.task"
-
-Invoke-WebRequest -Uri "https://storage.googleapis.com/mediapipe-models/pose_landmarker/pose_landmarker_lite/float16/1/pose_landmarker_lite.task" -OutFile "host\pose_landmarker.task"
-```
+### 3. Download the MediaPipe hand model
 
 #### macOS / Linux
 ```bash
 curl -L -o host/hand_landmarker.task \
   https://storage.googleapis.com/mediapipe-models/hand_landmarker/hand_landmarker/float16/1/hand_landmarker.task
+```
 
-curl -L -o host/pose_landmarker.task \
-  https://storage.googleapis.com/mediapipe-models/pose_landmarker/pose_landmarker_lite/float16/1/pose_landmarker_lite.task
+#### Windows (PowerShell)
+```powershell
+Invoke-WebRequest -Uri "https://storage.googleapis.com/mediapipe-models/hand_landmarker/hand_landmarker/float16/1/hand_landmarker.task" -OutFile "host\hand_landmarker.task"
 ```
 
 ### 4. Upload firmware to Arduino
 
-The file `firmware/arm_firmware/arm_firmware.ino` is the Arduino sketch that receives joint angles over USB serial and drives the 6 servos via the PCA9685 board. You need to upload this file to your Arduino Uno **once**.
-
-#### Step 4a — Install Arduino IDE
-
-Download and install from [arduino.cc/en/software](https://www.arduino.cc/en/software) (Windows, macOS, or Linux).
-
-#### Step 4b — Install the required library
-
-The firmware depends on the **Adafruit PWM Servo Driver Library** to communicate with the PCA9685 board over I2C.
-
 1. Open Arduino IDE
-2. Go to **Sketch → Include Library → Manage Libraries…** (or press `Ctrl+Shift+I`)
-3. In the search box, type **"Adafruit PWM Servo Driver"**
-4. Find **"Adafruit PWM Servo Driver Library"** by Adafruit — click **Install**
-5. If prompted to install dependencies (like "Adafruit BusIO"), click **Install All**
+2. Install library: **Sketch → Include Library → Manage Libraries → search "Adafruit PWM Servo Driver" → Install**
+3. Open `firmware/arm_firmware/arm_firmware.ino`
+4. Select board: **Tools → Board → Arduino Uno**
+5. Select port: **Tools → Port → your Arduino port**
+6. Click **Upload** (→ button)
+7. Open Serial Monitor (115200 baud) — you should see: `ARM_READY`
 
-#### Step 4c — Open the sketch
-
-1. In Arduino IDE, go to **File → Open…**
-2. Navigate to the cloned repo folder: `ArmAutomata-/firmware/arm_firmware/`
-3. Open the file **`arm_firmware.ino`**
-
-The sketch will open in a new window. You should see the code with `#include <Adafruit_PWMServoDriver.h>` at the top.
-
-#### Step 4d — Connect and configure
-
-1. **Plug the Arduino Uno into your computer** via USB-B cable
-2. In Arduino IDE, go to **Tools → Board** and select **"Arduino Uno"**
-3. Go to **Tools → Port** and select the port that appeared when you plugged in:
-   - Windows: **COM3**, **COM4**, etc.
-   - macOS: **/dev/cu.usbmodem14201** or similar
-   - Linux: **/dev/ttyACM0** or similar
-
-> If no port appears, install the Arduino USB driver: [CH340 driver](https://sparks.gogo.co.nz/ch340.html) (for clone boards) or the official [Arduino drivers](https://www.arduino.cc/en/Guide/DriverInstallation).
-
-#### Step 4e — Upload
-
-1. Click the **Upload** button (→ arrow icon) or press `Ctrl+U`
-2. Wait for the IDE to compile and upload. You should see:
-   ```
-   Sketch uses XXXX bytes (XX%) of program storage space.
-   Done uploading.
-   ```
-3. The Arduino will reset, and all 6 servos will move to **90° (neutral position)**
-4. Open **Tools → Serial Monitor** (set baud to **115200**) — you should see: `ARM_READY`
-
-The Arduino is now ready to receive angle commands from the Python host. You only need to upload once — the firmware stays in the Arduino's flash memory even after power cycling.
+> If no port appears, install the [CH340 driver](https://sparks.gogo.co.nz/ch340.html) (clone boards) or the official [Arduino drivers](https://www.arduino.cc/en/Guide/DriverInstallation).
 
 ### 5. Find your serial port
-
-The easiest way — use the built-in port scanner:
 
 ```bash
 python host/main.py --list-ports
 ```
-```
-Available serial ports:
-  COM3                  Arduino Uno (COM3)
-```
 
-Or find it manually:
-
-| OS | Method |
-|----|--------|
-| **Windows** | Device Manager → Ports (COM & LPT) → look for "Arduino Uno (COMx)" |
-| **macOS** | Terminal: `ls /dev/tty.usb*` |
+| OS | Manual method |
+|----|---------------|
+| **Windows** | Device Manager → Ports (COM & LPT) |
+| **macOS** | Terminal: `ls /dev/cu.usb*` |
 | **Linux** | Terminal: `ls /dev/ttyACM* /dev/ttyUSB*` |
 
 ---
 
 ## Running
 
-Activate your virtual environment first, then:
-
 ```bash
-# Test without Arduino (any platform)
+# Activate venv first
+source venv/bin/activate          # macOS/Linux
+# venv\Scripts\activate           # Windows
+
+# Test without Arduino (camera + tracking only)
 python host/main.py --no-serial
 
 # With Arduino
-python host/main.py --port COM3              # Windows
-python host/main.py --port /dev/tty.usbmodem14201  # macOS
-python host/main.py --port /dev/ttyACM0      # Linux
-
-# Auto-detect serial ports
-python host/main.py --list-ports
+python host/main.py --port /dev/cu.usbserial-1130    # macOS
+python host/main.py --port COM3                       # Windows
+python host/main.py --port /dev/ttyACM0               # Linux
 ```
 
-> **Note:** On macOS/Linux, use `python3` instead of `python` if your system default is Python 2.
-
-- An OpenCV window shows the annotated camera feed with tracking mode and joint angles.
+- An OpenCV window shows the annotated camera feed with hand skeleton, gesture state, and servo angles.
 - Press **`q`** in the window to quit.
-
-### IK Validation
-
-```bash
-python host/kinematics.py
-```
 
 ---
 
@@ -243,62 +396,99 @@ python host/kinematics.py
 
 ```
 ArmAutomata-/
-├── README.md
-├── requirements.txt
+├── README.md                    # This file
+├── WIRING_GUIDE.md              # Detailed hardware wiring guide
+├── requirements.txt             # Python dependencies
 ├── .gitignore
 ├── host/
-│   ├── config.py          # All tunable constants (auto-detects OS)
-│   ├── hand_tracker.py    # MediaPipe Hand Landmarker (fingers)
-│   ├── body_tracker.py    # MediaPipe Pose Landmarker (arm)
-│   ├── arm_mapper.py      # Maps human arm → robot joint angles
-│   ├── gestures.py        # Gesture classification + claw + wrist rotation
-│   ├── calibration.py     # Normalised coords → workspace mm
-│   ├── kinematics.py      # Inverse & forward kinematics (IK fallback)
-│   ├── smoothing.py       # EMA + deadband filter
-│   ├── serial_link.py     # Arduino serial communication (6 angles)
-│   └── main.py            # Main control loop (--list-ports, --no-serial)
+│   ├── main.py                  # Main control loop (wrist-only mode)
+│   ├── config.py                # All tunable constants (auto-detects OS)
+│   ├── hand_tracker.py          # MediaPipe Hand Landmarker wrapper
+│   ├── gestures.py              # Gesture classification + claw + wrist angles
+│   ├── smoothing.py             # EMA + deadband filter
+│   ├── serial_link.py           # Arduino serial communication (3 angles)
+│   ├── hand_landmarker.task     # ML model (downloaded, not in git)
+│   │
+│   │  ── Reference (not used in wrist-only mode) ──
+│   ├── body_tracker.py          # MediaPipe Pose Landmarker (arm tracking)
+│   ├── arm_mapper.py            # Maps human arm → robot joint angles
+│   ├── kinematics.py            # Inverse & forward kinematics
+│   └── calibration.py           # Normalised coords → workspace mm
+│
 └── firmware/
-    └── arm_firmware/
-        └── arm_firmware.ino   # Arduino sketch (6 servos, non-blocking)
+    ├── arm_firmware/
+    │   └── arm_firmware.ino      # Arduino sketch (wrist-only, Ch 0-2 disabled)
+    ├── servo_calibration/
+    │   └── servo_calibration.ino # Servo calibration utility
+    └── test_claw_sg90/
+        └── test_claw_sg90.ino    # Claw servo test sketch
 ```
 
 ## Configuration
 
-All tunable constants live in [`host/config.py`](host/config.py). The serial port default auto-detects your OS.
+All tunable constants live in [`host/config.py`](host/config.py). Key values for the current wrist-only mode:
 
-| Constant                 | Default | Description                                  |
-|--------------------------|---------|----------------------------------------------|
-| `L1_MM` / `L2_MM`        | 105/98  | Link lengths in mm                           |
-| `BASE_HEIGHT_MM`         | 60      | Base/shoulder pivot height in mm             |
-| `SMOOTHING_ALPHA`        | 0.15    | EMA weight (halved for smooth, half-speed motion) |
-| `DEADBAND_DEGREES`       | 2.0     | Min angle change to retransmit (positional)  |
-| `BASE_SPEED_DEG_PER_SEC` | 120.0   | Base rotational speed (deg/sec)              |
-| `SHOULDER_SPEED_DEG_PER_SEC` | 120.0 | Shoulder rotational speed (deg/sec)          |
-| `ELBOW_SPEED_DEG_PER_SEC`| 120.0   | Elbow rotational speed (deg/sec)             |
-| `POSITIVE_SPEED_FACTOR`  | 1.25    | Positive (CCW) move time multiplier (+25%)   |
-| `BASE_STOP_PULSE`        | 307     | Neutral stop pulse count for continuous MG996R (1.5ms at 50Hz) |
-| `BASE_DEADBAND_DEG`      | 3.0     | Error deadband for continuous motor controllers|
-| `BASE_INVERT_DIRECTION`  | False   | Invert base rotation direction if needed     |
-| `SHOULDER_INVERT_DIRECTION` | False| Invert shoulder rotation direction if needed |
-| `ELBOW_INVERT_DIRECTION` | False   | Invert elbow rotation direction if needed    |
-| `JOINT_MIN_ANGLES`       | [0, 15, 10, 0, 0, 30] | Min angles per joint (collision prevention) |
-| `JOINT_MAX_ANGLES`       | [180, 165, 170, 180, 180, 90] | Max angles per joint |
-| `CLAW_DIST_MIN`          | 0.05    | Thumb-finger dist -> claw fully closed       |
-| `CLAW_DIST_MAX`          | 0.35    | Thumb-finger dist -> claw fully open         |
-| `CLAW_OPEN_ANGLE`        | 90      | Servo angle for claw open                    |
-| `CLAW_CLOSED_ANGLE`      | 30      | Servo angle for claw closed                  |
-| `SERIAL_PORT`            | auto    | COM3 (Win) / /dev/tty.usbmodem... (Mac) / /dev/ttyACM0 (Linux) |
+### Active Servo Parameters
+
+| Constant | Value | Description |
+|----------|:-----:|-------------|
+| `WRIST_ROT_NEUTRAL_ANGLE` | 90° | Wrist rotation neutral (fingers up) |
+| `WRIST_EXT_NEUTRAL_ANGLE` | 90° | Wrist extension neutral (hand upright) |
+| `CLAW_OPEN_ANGLE` | 80° | Claw fully open |
+| `CLAW_CLOSED_ANGLE` | 20° | Claw fully closed |
+| `CLAW_DIST_MIN` | 0.15 | Normalised thumb-finger distance → fully closed |
+| `CLAW_DIST_MAX` | 0.45 | Normalised thumb-finger distance → fully open |
+
+### Joint Limits
+
+| Joint | Channel | Min Angle | Max Angle |
+|-------|:-------:|:---------:|:---------:|
+| Base Rotation | 0 | 0° | 180° |
+| Shoulder Extension | 1 | 15° | 165° |
+| Elbow Extension | 2 | 10° | 170° |
+| **Wrist Rotation** | **3** | **0°** | **180°** |
+| **Wrist Extension** | **4** | **0°** | **180°** |
+| **Claw** | **5** | **20°** | **80°** |
+
+### Signal Processing
+
+| Constant | Value | Description |
+|----------|:-----:|-------------|
+| `SMOOTHING_ALPHA` | 0.15 | EMA weight (lower = smoother, slower) |
+| `DEADBAND_DEGREES` | 2.0° | Min change to trigger retransmission |
+| `FIST_CURL_THRESHOLD` | 0.15 | Fingertip-to-MCP ratio for fist detection |
+
+### Serial
+
+| Constant | Value | Description |
+|----------|:-----:|-------------|
+| `SERIAL_BAUD` | 115200 | Must match firmware |
+| `SERIAL_RESET_WAIT_S` | 2.0s | Wait for Arduino bootloader after connect |
+
+---
 
 ## Troubleshooting
 
 | Problem | Solution |
 |---------|----------|
-| `ModuleNotFoundError` | Activate the venv: `venv\Scripts\activate` (Win) or `source venv/bin/activate` (Mac/Linux) |
-| Camera not opening | Grant camera permission. Windows: Settings → Privacy → Camera. macOS: System Settings → Privacy → Camera |
-| `FileNotFoundError: hand_landmarker.task` | Download the model files (step 3 above) |
+| `ModuleNotFoundError` | Activate the venv: `source venv/bin/activate` (Mac/Linux) or `venv\Scripts\activate` (Win) |
+| Camera not opening | Grant camera permission. macOS: System Settings → Privacy → Camera |
+| `FileNotFoundError: hand_landmarker.task` | Download the model file (step 3 above) |
 | Serial port not found | Run `python host/main.py --list-ports` to find the correct port |
+| `Resource busy` serial error | Close Arduino IDE Serial Monitor or kill other processes using the port: `lsof /dev/cu.usbserial-*` |
 | MediaPipe crash on macOS (`DrishtiMetalHelper`) | Use `mediapipe<1.0` (already pinned in requirements.txt) and Python 3.12 |
+| Servos don't move | Check: firmware flashed? Serial Monitor shows `ARM_READY`? Buck converter outputting 5V? |
+| Claw doesn't fully close | Tune `CLAW_DIST_MIN` in `config.py` (increase for easier closing) |
 | `python` not found (Mac/Linux) | Use `python3` instead |
+
+## Dependencies
+
+| Package | Version | Purpose |
+|---------|---------|---------|
+| `opencv-python` | ≥ 4.8.0 | Camera capture + display |
+| `mediapipe` | ≥ 0.10.0, < 1.0 | Hand landmark detection (ML model) |
+| `numpy` | ≥ 1.24.0 | Array operations (used by MediaPipe/OpenCV) |
+| `pyserial` | ≥ 3.5 | USB serial communication with Arduino |
 
 ## License
 
