@@ -20,14 +20,14 @@ Webcam → Pose Landmarker (shoulder/elbow/wrist)
 
 ### Motor Layout
 
-| PCA9685 Ch | Joint              | Servo  | Control Source                    |
-|------------|--------------------|--------|-----------------------------------|
-| 0          | Base Rotation      | MG996R | Wrist horizontal position         |
-| 1          | Shoulder Extension | MG996R | Upper arm angle (direct mirror)   |
-| 2          | Elbow Extension    | MG996R | Elbow interior angle (direct)     |
-| 3          | Wrist Rotation     | MG90S  | Hand roll angle in camera         |
-| 4          | Wrist Extension    | MG90S  | Auto-levels end-effector          |
-| 5          | Claw (2-finger)    | SG90   | Thumb-to-fingers distance         |
+| PCA9685 Ch | Joint              | Servo  | Range / Limits | Pulse Count | Control Source                    |
+|------------|--------------------|--------|----------------|-------------|-----------------------------------|
+| 0          | Base Rotation      | MG996R (360° Continuous) | -100 to +100 speed | 150 – 464 (stop: 307) | Virtual tracker from wrist horizontal position |
+| 1          | Shoulder Extension | MG996R (360° Continuous) | -100 to +100 speed | 150 – 464 (stop: 307) | Virtual tracker from upper arm angle |
+| 2          | Elbow Extension    | MG996R (360° Continuous) | -100 to +100 speed | 150 – 464 (stop: 307) | Virtual tracker from elbow interior angle |
+| 3          | Wrist Rotation     | MG90S  (180° Positional) | 0° – 180° angle    | 102 – 512   | Hand roll angle in camera         |
+| 4          | Wrist Extension    | MG90S  (180° Positional) | 0° – 180° angle    | 102 – 512   | Auto-levels end-effector          |
+| 5          | Claw (2-finger)    | SG90   (180° Positional) | 30° – 90° angle    | 102 – 492   | Thumb-to-fingers distance         |
 
 ### Gesture Control
 
@@ -266,17 +266,28 @@ ArmAutomata-/
 
 All tunable constants live in [`host/config.py`](host/config.py). The serial port default auto-detects your OS.
 
-| Constant             | Default | Description                                  |
-|----------------------|---------|----------------------------------------------|
-| `L1_MM` / `L2_MM`   | 105/98  | Link lengths in mm                           |
-| `BASE_HEIGHT_MM`     | 60      | Base/shoulder pivot height in mm             |
-| `SMOOTHING_ALPHA`    | 0.3     | EMA weight (0 = max smooth, 1 = none)        |
-| `DEADBAND_DEGREES`   | 2.0     | Min angle change to retransmit               |
-| `CLAW_DIST_MIN`      | 0.05    | Thumb-finger dist → claw fully closed        |
-| `CLAW_DIST_MAX`      | 0.35    | Thumb-finger dist → claw fully open          |
-| `CLAW_OPEN_ANGLE`    | 90      | Servo angle for claw open                    |
-| `CLAW_CLOSED_ANGLE`  | 30      | Servo angle for claw closed                  |
-| `SERIAL_PORT`        | auto    | COM3 (Win) / /dev/tty.usbmodem… (Mac) / /dev/ttyACM0 (Linux) |
+| Constant                 | Default | Description                                  |
+|--------------------------|---------|----------------------------------------------|
+| `L1_MM` / `L2_MM`        | 105/98  | Link lengths in mm                           |
+| `BASE_HEIGHT_MM`         | 60      | Base/shoulder pivot height in mm             |
+| `SMOOTHING_ALPHA`        | 0.15    | EMA weight (halved for smooth, half-speed motion) |
+| `DEADBAND_DEGREES`       | 2.0     | Min angle change to retransmit (positional)  |
+| `BASE_SPEED_DEG_PER_SEC` | 120.0   | Base rotational speed (deg/sec)              |
+| `SHOULDER_SPEED_DEG_PER_SEC` | 120.0 | Shoulder rotational speed (deg/sec)          |
+| `ELBOW_SPEED_DEG_PER_SEC`| 120.0   | Elbow rotational speed (deg/sec)             |
+| `POSITIVE_SPEED_FACTOR`  | 1.25    | Positive (CCW) move time multiplier (+25%)   |
+| `BASE_STOP_PULSE`        | 307     | Neutral stop pulse count for continuous MG996R (1.5ms at 50Hz) |
+| `BASE_DEADBAND_DEG`      | 3.0     | Error deadband for continuous motor controllers|
+| `BASE_INVERT_DIRECTION`  | False   | Invert base rotation direction if needed     |
+| `SHOULDER_INVERT_DIRECTION` | False| Invert shoulder rotation direction if needed |
+| `ELBOW_INVERT_DIRECTION` | False   | Invert elbow rotation direction if needed    |
+| `JOINT_MIN_ANGLES`       | [0, 15, 10, 0, 0, 30] | Min angles per joint (collision prevention) |
+| `JOINT_MAX_ANGLES`       | [180, 165, 170, 180, 180, 90] | Max angles per joint |
+| `CLAW_DIST_MIN`          | 0.05    | Thumb-finger dist -> claw fully closed       |
+| `CLAW_DIST_MAX`          | 0.35    | Thumb-finger dist -> claw fully open         |
+| `CLAW_OPEN_ANGLE`        | 90      | Servo angle for claw open                    |
+| `CLAW_CLOSED_ANGLE`      | 30      | Servo angle for claw closed                  |
+| `SERIAL_PORT`            | auto    | COM3 (Win) / /dev/tty.usbmodem... (Mac) / /dev/ttyACM0 (Linux) |
 
 ## Troubleshooting
 

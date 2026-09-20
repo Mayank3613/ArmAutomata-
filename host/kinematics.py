@@ -164,7 +164,7 @@ if __name__ == "__main__":
     tolerance_mm = 5.0
     all_ok = True
 
-    print("IK → FK round-trip validation")
+    print("IK -> FK round-trip validation")
     print("=" * 60)
     for x, y, z in test_points:
         b, s, e, w = inverse_kinematics(x, y, z)
@@ -174,11 +174,11 @@ if __name__ == "__main__":
         if status == "FAIL":
             all_ok = False
         print(
-            f"  Target ({x:7.1f}, {y:7.1f}, {z:7.1f}) → "
-            f"IK [B={b:5.1f} S={s:5.1f} E={e:5.1f} W={w:5.1f}] → "
+            f"  Target ({x:7.1f}, {y:7.1f}, {z:7.1f}) -> "
+            f"IK [B={b:5.1f} S={s:5.1f} E={e:5.1f} W={w:5.1f}] -> "
             f"FK ({fx:7.1f}, {fy:7.1f}, {fz:7.1f})  "
             f"err={err:6.2f} mm  [{status}]"
         )
     print("=" * 60)
-    print("ALL PASSED ✓" if all_ok else "SOME TESTS FAILED ✗")
+    print("ALL PASSED [OK]" if all_ok else "SOME TESTS FAILED [FAIL]")
     sys.exit(0 if all_ok else 1)

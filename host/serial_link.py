@@ -1,10 +1,11 @@
 """
-Serial link to the Arduino — sends angle packets over USB serial.
+Serial link to the Arduino — sends motor command packets over USB serial.
 
 Packet format (ASCII, newline-terminated) for the 6-DOF arm:
-    base,shoulder,elbow,wrist_rot,wrist_ext,claw\\n
+    base_spd,shoulder_spd,elbow_spd,wrist_rot,wrist_ext,claw\n
 
-Each value is an integer in [0, 180].
+- base_spd, shoulder_spd, elbow_spd: integers in [-100, 100] (continuous rotation speeds; 0 = stop).
+- wrist_rot, wrist_ext, claw: integers in [0, 180] (servo angles in degrees).
 """
 
 from __future__ import annotations
@@ -65,26 +66,26 @@ class SerialLink:
 
     def send_angles(
         self,
-        base: int,
-        shoulder: int,
-        elbow: int,
+        base_spd: int,
+        shoulder_spd: int,
+        elbow_spd: int,
         wrist_rot: int,
         wrist_ext: int,
         claw: int,
     ) -> None:
-        """Send a six-angle packet to the Arduino.
+        """Send a six-motor command packet to the Arduino.
 
         Args:
-            base: Base rotation angle (0–180).
-            shoulder: Shoulder extension angle (0–180).
-            elbow: Elbow extension angle (0–180).
+            base_spd: Base rotation speed (-100 to +100, 0 = stop).
+            shoulder_spd: Shoulder rotation speed (-100 to +100, 0 = stop).
+            elbow_spd: Elbow rotation speed (-100 to +100, 0 = stop).
             wrist_rot: Wrist rotation angle (0–180).
             wrist_ext: Wrist extension angle (0–180).
             claw: Claw (gripper) angle (0–180).
         """
         if self._ser is None or not self._ser.is_open:
             return
-        packet = f"{base},{shoulder},{elbow},{wrist_rot},{wrist_ext},{claw}\n"
+        packet = f"{base_spd},{shoulder_spd},{elbow_spd},{wrist_rot},{wrist_ext},{claw}\n"
         self._ser.write(packet.encode("ascii"))
 
     def close(self) -> None:

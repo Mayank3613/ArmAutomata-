@@ -20,6 +20,17 @@ from config import (
     WRIST_EXT_NEUTRAL_ANGLE,
     WRIST_ROT_NEUTRAL_ANGLE,
     CLAW_OPEN_ANGLE,
+    JOINT_MIN_ANGLES,
+    JOINT_MAX_ANGLES,
+    BASE_SPEED_DEG_PER_SEC,
+    SHOULDER_SPEED_DEG_PER_SEC,
+    ELBOW_SPEED_DEG_PER_SEC,
+    POSITIVE_SPEED_FACTOR,
+    NEGATIVE_SPEED_FACTOR,
+    BASE_DEADBAND_DEG,
+    BASE_INVERT_DIRECTION,
+    SHOULDER_INVERT_DIRECTION,
+    ELBOW_INVERT_DIRECTION,
 )
 from body_tracker import (
     RIGHT_SHOULDER,
@@ -43,6 +54,95 @@ _BASE_SCALE = 250.0  # [TUNE] degrees per unit of normalised x-displacement
 def _clamp(value: float, lo: float, hi: float) -> float:
     """Clamp *value* to [lo, hi]."""
     return max(lo, min(hi, value))
+
+
+class ContinuousJointTracker:
+    """Tracks virtual joint position and generates speed commands for continuous rotation.
+
+    Applies to continuous-rotation MG996R motors (Ch 0 Base, Ch 1 Shoulder, Ch 2 Elbow).
+    Since they cannot seek directly to an absolute angle, this tracker maintains an estimated
+    virtual position over time based on commanded speed and joint velocity (deg/sec),
+    and applies a proportional velocity controller to steer towards the target angle.
+    """
+
+    def __init__(
+        self,
+        initial_angle: float = 90.0,
+        speed_deg_per_sec: float = BASE_SPEED_DEG_PER_SEC,
+        deadband_deg: float = BASE_DEADBAND_DEG,
+        invert: bool = False,
+        min_angle: float = 0.0,
+        max_angle: float = 180.0,
+        positive_factor: float = POSITIVE_SPEED_FACTOR,
+        negative_factor: float = NEGATIVE_SPEED_FACTOR,
+    ) -> None:
+        self.virtual_angle = float(initial_angle)
+        self.speed_deg_per_sec = float(speed_deg_per_sec)
+        self.deadband = float(deadband_deg)
+        self.invert = bool(invert)
+        self.min_angle = float(min_angle)
+        self.max_angle = float(max_angle)
+        self.positive_factor = float(positive_factor)
+        self.negative_factor = float(negative_factor)
+        self.current_speed = 0
+
+    def update(self, target_angle: float, dt: float) -> int:
+        """Update virtual position using elapsed time dt and compute speed command.
+
+        Args:
+            target_angle: Desired joint angle in degrees.
+            dt: Time elapsed since last update in seconds.
+
+        Returns:
+            speed: integer in [-100, 100] (0 = stopped).
+        """
+        target_angle = _clamp(target_angle, self.min_angle, self.max_angle)
+
+        # Advance virtual position based on speed during interval dt
+        if self.current_speed != 0 and dt > 0:
+            effective_speed = -self.current_speed if self.invert else self.current_speed
+            speed_dps = self.speed_deg_per_sec
+            if effective_speed > 0 and self.positive_factor > 0:
+                speed_dps = speed_dps / self.positive_factor
+            elif effective_speed < 0 and self.negative_factor > 0:
+                speed_dps = speed_dps / self.negative_factor
+            movement = (effective_speed / 100.0) * speed_dps * dt
+            self.virtual_angle = _clamp(
+                self.virtual_angle + movement,
+                self.min_angle,
+                self.max_angle,
+            )
+
+        error = target_angle - self.virtual_angle
+
+        # If within deadband, shut off motor
+        if abs(error) <= self.deadband:
+            self.current_speed = 0
+            return 0
+
+        # Proportional controller: full speed at >= 30° error
+        kp = 100.0 / 30.0
+        raw_speed = kp * error
+
+        # Minimum kick threshold (25%) to overcome static gearbox friction
+        direction = 1 if error > 0 else -1
+        speed_mag = min(100.0, max(25.0, abs(raw_speed)))
+        speed = int(round(direction * speed_mag))
+
+        if self.invert:
+            speed = -speed
+
+        self.current_speed = speed
+        return self.current_speed
+
+    def stop(self) -> int:
+        """Immediately command 0 speed (stop joint rotation)."""
+        self.current_speed = 0
+        return 0
+
+
+# Backwards compatibility alias
+BaseTracker = ContinuousJointTracker
 
 
 def _angle_at_vertex(
@@ -255,4 +355,13 @@ def compute_robot_angles(
         wrist_rot = compute_wrist_rotation(hand_landmarks)
         claw = compute_claw_angle(hand_landmarks)
 
+    # Clamp all angles to physical joint limits
+    base = _clamp(base, JOINT_MIN_ANGLES[0], JOINT_MAX_ANGLES[0])
+    shoulder = _clamp(shoulder, JOINT_MIN_ANGLES[1], JOINT_MAX_ANGLES[1])
+    elbow = _clamp(elbow, JOINT_MIN_ANGLES[2], JOINT_MAX_ANGLES[2])
+    wrist_rot = _clamp(wrist_rot, JOINT_MIN_ANGLES[3], JOINT_MAX_ANGLES[3])
+    wrist_ext = _clamp(wrist_ext, JOINT_MIN_ANGLES[4], JOINT_MAX_ANGLES[4])
+    claw = _clamp(claw, JOINT_MIN_ANGLES[5], JOINT_MAX_ANGLES[5])
+
     return base, shoulder, elbow, wrist_rot, wrist_ext, claw
+

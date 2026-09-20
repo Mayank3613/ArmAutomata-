@@ -49,7 +49,7 @@ CLAW_CLOSED_ANGLE: int = 30           # [TUNE] Servo angle for claw fully closed
 # ---------------------------------------------------------------------------
 # Smoothing
 # ---------------------------------------------------------------------------
-SMOOTHING_ALPHA: float = 0.3          # EMA weight for new readings (0 = ignore, 1 = no smoothing)
+SMOOTHING_ALPHA: float = 0.15         # EMA weight (halved for smoother, half-speed motion)
 DEADBAND_DEGREES: float = 2.0         # Ignore angle changes smaller than this
 
 # ---------------------------------------------------------------------------
@@ -59,6 +59,31 @@ SERVO_MIN_ANGLE: int = 0
 SERVO_MAX_ANGLE: int = 180
 WRIST_EXT_NEUTRAL_ANGLE: int = 90     # [TUNE] Wrist extension neutral (level)
 WRIST_ROT_NEUTRAL_ANGLE: int = 90     # [TUNE] Wrist rotation neutral (no twist)
+
+# Actuation limits per joint to prevent mechanical collisions
+# Order: [Base, Shoulder, Elbow, WristRot, WristExt, Claw]
+JOINT_MIN_ANGLES: list[int] = [0, 15, 10, 0, 0, 30]
+JOINT_MAX_ANGLES: list[int] = [180, 165, 170, 180, 180, 90]
+
+# Per-motor pulse counts for PCA9685 (at 50 Hz)
+# Ch 0-2 (MG996R): 150-464 (center=307), Ch 3-4 (MG90S): 102-512 (center=307), Ch 5 (SG90): 102-492
+PULSE_MIN: list[int] = [150, 150, 150, 102, 102, 102]
+PULSE_MAX: list[int] = [464, 464, 464, 512, 512, 492]
+
+# ---------------------------------------------------------------------------
+# Continuous MG996R Motors Tuning Parameters (Ch 0 Base, Ch 1 Shoulder, Ch 2 Elbow)
+# ---------------------------------------------------------------------------
+BASE_SPEED_DEG_PER_SEC: float = 120.0     # Calibrated: 120.0 deg/sec
+SHOULDER_SPEED_DEG_PER_SEC: float = 120.0 # Calibrated: 120.0 deg/sec
+ELBOW_SPEED_DEG_PER_SEC: float = 120.0    # Calibrated: 120.0 deg/sec
+POSITIVE_SPEED_FACTOR: float = 1.25       # Positive (CCW) rotation is slower -> takes 25% longer
+NEGATIVE_SPEED_FACTOR: float = 1.0        # Neutral/standard multiplier for negative rotation
+
+BASE_STOP_PULSE: int = 307               # Calibrated neutral stop point (1.5ms at 50Hz)
+BASE_DEADBAND_DEG: float = 3.0            # Error deadband below which continuous motors stop
+BASE_INVERT_DIRECTION: bool = False       # Invert base rotation direction if needed
+SHOULDER_INVERT_DIRECTION: bool = False   # Invert shoulder rotation direction if needed
+ELBOW_INVERT_DIRECTION: bool = False      # Invert elbow rotation direction if needed
 
 # ---------------------------------------------------------------------------
 # PCA9685 channel assignments (must match firmware)
