@@ -418,10 +418,8 @@ ArmAutomata-/
 └── firmware/
     ├── arm_firmware/
     │   └── arm_firmware.ino      # Arduino sketch (wrist-only, Ch 0-2 disabled)
-    ├── servo_calibration/
-    │   └── servo_calibration.ino # Servo calibration utility
-    └── test_claw_sg90/
-        └── test_claw_sg90.ino    # Claw servo test sketch
+    └── servo_calibration/
+        └── servo_calibration.ino # Servo calibration utility
 ```
 
 ## Configuration
