@@ -96,11 +96,11 @@ def classify_gesture(landmarks: List[object]) -> str:
 def compute_claw_angle(landmarks: List[object]) -> int:
     """Compute a proportional claw angle from thumb-to-finger distance.
 
-    The claw maps the distance between the **thumb tip** and the average
-    position of the four **fingertips** (index, middle, ring, pinky).
+    The claw maps the distance between the **thumb tip** and the **closest
+    fingertip** (index, middle, ring, or pinky).
 
-    - Thumb close to fingers → claw closed (``CLAW_CLOSED_ANGLE``)
-    - Thumb far from fingers  → claw open  (``CLAW_OPEN_ANGLE``)
+    - Thumb touching any finger → claw closed (``CLAW_CLOSED_ANGLE``)
+    - Thumb far from all fingers → claw open  (``CLAW_OPEN_ANGLE``)
 
     Args:
         landmarks: 21 MediaPipe NormalizedLandmark objects.
@@ -112,20 +112,17 @@ def compute_claw_angle(landmarks: List[object]) -> int:
     if palm < 1e-6:
         return CLAW_OPEN_ANGLE
 
-    # Average position of the four fingertips (the "rest of the hand")
-    avg_x = sum(landmarks[t].x for t in _FINGER_TIPS) / 4.0
-    avg_y = sum(landmarks[t].y for t in _FINGER_TIPS) / 4.0
-    avg_z = sum(landmarks[t].z for t in _FINGER_TIPS) / 4.0
-
-    # Distance from thumb tip to that average, normalised by palm size
     thumb = landmarks[_THUMB_TIP]
-    dx = thumb.x - avg_x
-    dy = thumb.y - avg_y
-    dz = thumb.z - avg_z
-    dist_norm = math.sqrt(dx * dx + dy * dy + dz * dz) / palm
+
+    # Find the closest fingertip to the thumb
+    min_dist = float('inf')
+    for tip_idx in _FINGER_TIPS:
+        d = _dist(thumb, landmarks[tip_idx]) / palm
+        if d < min_dist:
+            min_dist = d
 
     # Linear interpolation: CLAW_DIST_MIN → closed, CLAW_DIST_MAX → open
-    t = (dist_norm - CLAW_DIST_MIN) / (CLAW_DIST_MAX - CLAW_DIST_MIN)
+    t = (min_dist - CLAW_DIST_MIN) / (CLAW_DIST_MAX - CLAW_DIST_MIN)
     t = max(0.0, min(1.0, t))  # clamp to [0, 1]
 
     angle = CLAW_CLOSED_ANGLE + t * (CLAW_OPEN_ANGLE - CLAW_CLOSED_ANGLE)

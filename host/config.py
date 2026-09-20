@@ -41,8 +41,8 @@ OPEN_PALM_THRESHOLD: float = 0.15     # [TUNE] Min fingertip-to-MCP distance for
 # ---------------------------------------------------------------------------
 # Claw (gripper) control — proportional thumb-to-fingers mapping
 # ---------------------------------------------------------------------------
-CLAW_DIST_MIN: float = 0.05           # [TUNE] Normalised thumb-finger distance → fully closed
-CLAW_DIST_MAX: float = 0.35           # [TUNE] Normalised thumb-finger distance → fully open
+CLAW_DIST_MIN: float = 0.15           # [TUNE] Normalised thumb-finger distance → fully closed
+CLAW_DIST_MAX: float = 0.45           # [TUNE] Normalised thumb-finger distance → fully open
 CLAW_OPEN_ANGLE: int = 80             # [TUNE] Servo angle for claw fully open
 CLAW_CLOSED_ANGLE: int = 20           # [TUNE] Servo angle for claw fully closed
 
